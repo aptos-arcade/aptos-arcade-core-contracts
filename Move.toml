@@ -1,5 +1,5 @@
 [package]
-name = 'aptos_arcade_core'
+name = 'AptosArcadeCore'
 version = '1.0.0'
 
 [addresses]
