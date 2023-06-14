@@ -55,8 +55,7 @@ module aptos_arcade::match {
     }
 
     /// initializes a `MatchCollection `for `GameType`
-    /// `game_signer` - must be the account that published the `GameType` struct
-    /// `witness` - a witness for `GameType`
+    /// `game_admin_cap` - reference to a `GameAdminCapability` for `GameType`
     public fun initialize_matches_collection<GameType: drop>(game_admin_cap: &GameAdminCapability<GameType>) {
         // assert that the collection hasn't been initialized and that the signer is the struct creator
         assert_collection_does_not_exist<GameType>();
@@ -67,7 +66,7 @@ module aptos_arcade::match {
             get_collection_description<GameType>(),
             get_collection_name<GameType>(),
             option::none(),
-            string::utf8(COLLECTION_URI),
+            get_collection_uri<GameType>()
         );
 
         // add the collection resource to the collection object
@@ -76,8 +75,7 @@ module aptos_arcade::match {
     }
 
     /// creates a match for `GameType` with `teams`
-    /// `game_admin` - must be the account that published the `GameType` struct
-    /// `witness` - a witness for `GameType`
+    /// `game_admin_cap` - reference to a `GameAdminCapability` for `GameType`
     /// `teams` - a vector of teams, where each team is a vector of player addresses
     public fun create_match<GameType: drop>(
         game_admin_cap: &GameAdminCapability<GameType>,
@@ -115,6 +113,7 @@ module aptos_arcade::match {
     }
 
     /// sets the winner of a match
+    /// `game_admin_cap` - reference to a `GameAdminCapability` for `GameType`
     /// `match` - the match to set the winner for
     /// `winner_index` - the index of the winning team
     public fun set_match_result<GameType>(
@@ -141,7 +140,8 @@ module aptos_arcade::match {
     }
 
     #[view]
-    /// returns the match information for `match`
+    /// returns the teams and result option for `match`
+    /// `match` - the match to get information for
     public fun get_match<GameType>(match: Object<Match<GameType>>): (vector<vector<address>>, Option<u64>) acquires Match {
         let match = borrow_global<Match<GameType>>(object::object_address(&match));
         (match.teams, match.winner_index)
@@ -160,7 +160,7 @@ module aptos_arcade::match {
     }
 
     /// returns the URI for a match collection
-    fun get_collection_uri(): String {
+    fun get_collection_uri<GameType>(): String {
         string::utf8(COLLECTION_URI)
     }
 
@@ -245,7 +245,7 @@ module aptos_arcade::match {
         );
         assert!(collection::name(collection_object) == get_collection_name<TestGame>(), 0);
         assert!(collection::description(collection_object) == get_collection_description<TestGame>(), 0);
-        assert!(collection::uri(collection_object) == get_collection_uri(), 0);
+        assert!(collection::uri(collection_object) == get_collection_uri<TestGame>(), 0);
         assert!(*option::borrow(&collection::count(collection_object)) == 0, 0);
     }
 
