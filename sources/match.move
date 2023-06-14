@@ -31,11 +31,14 @@ module aptos_arcade::match {
     /// error code for when the teams are not the same length
     const ETEAMS_NOT_SAME_LENGTH: u64 = 4;
 
+    /// error code for when a player in the match has not registered an ELO token
+    const EPLAYER_HAS_NOT_REGISTERED_ELO_TOKEN: u64 = 5;
+
     /// error code for when a match is already complete
-    const EMATCH_ALREADY_COMPLETE: u64 = 5;
+    const EMATCH_ALREADY_COMPLETE: u64 = 6;
 
     /// error code for when the winner index is invalid
-    const EINVALID_WINNER_INDEX: u64 = 6;
+    const EINVALID_WINNER_INDEX: u64 = 7;
 
     // constants
 
@@ -86,6 +89,7 @@ module aptos_arcade::match {
         assert_more_than_one_team(&teams);
         assert_at_least_one_player_per_team(&teams);
         assert_teams_are_same_size(&teams);
+        assert_all_players_registered<GameType>(teams);
 
         // mint a token for a player
         let constructor_ref = game_admin::mint_token_game_admin(
@@ -203,6 +207,20 @@ module aptos_arcade::match {
         assert!(vector::all(teams, | entry | vector::length(entry) > 0), ETEAMS_EMPTY);
     }
 
+    /// asserts that every player has registered an ELO token
+    /// `teams` - a vector of team vectors
+    fun assert_all_players_registered<GameType>(teams: vector<vector<address>>) {
+        vector::for_each(teams, | team | assert_all_players_registered_on_team<GameType>(team));
+    }
+
+    /// asserts that every player on a team has registered an ELO token
+    /// `team` - a vector of addresses
+    fun assert_all_players_registered_on_team<GameType>(team: vector<address>) {
+        vector::for_each(team, | player | {
+            assert!(elo::has_player_minted<GameType>(player), EPLAYER_HAS_NOT_REGISTERED_ELO_TOKEN);
+        });
+    }
+
     /// asserts that all teams are the same size
     /// `teams` - a vector of team vectors
     fun assert_teams_are_same_size(teams: &vector<vector<address>>) {
@@ -261,9 +279,13 @@ module aptos_arcade::match {
     fun test_create_match(aptos_arcade: &signer, player1: &signer, player2: &signer) acquires Match {
         let game_admin_cap = game_admin::initialize(aptos_arcade, TestGame {});
         initialize_matches_collection(&game_admin_cap);
+        elo::initialize_elo_collection(&game_admin_cap);
 
         let player1_address = signer::address_of(player1);
         let player2_address = signer::address_of(player2);
+
+        elo::mint_elo_token(&game_admin::create_player_capability(player1, TestGame {}));
+        elo::mint_elo_token(&game_admin::create_player_capability(player2, TestGame {}));
 
         let teams = vector<vector<address>>[
             vector<address>[player1_address],
@@ -333,6 +355,23 @@ module aptos_arcade::match {
         let teams = vector<vector<address>>[
             vector<address>[player1_address, player2_address],
             vector<address>[player3_address]
+        ];
+        create_match(&game_admin_cap, teams);
+    }
+
+    #[test(aptos_arcade=@aptos_arcade, player1=@0x100, player2=@0x101)]
+    #[expected_failure(abort_code=EPLAYER_HAS_NOT_REGISTERED_ELO_TOKEN)]
+    fun test_create_match_elo_not_registered(aptos_arcade: &signer, player1: &signer, player2: &signer) {
+        let game_admin_cap = game_admin::initialize(aptos_arcade, TestGame {});
+        initialize_matches_collection(&game_admin_cap);
+        elo::initialize_elo_collection(&game_admin_cap);
+
+        let player1_address = signer::address_of(player1);
+        let player2_address = signer::address_of(player2);
+
+        let teams = vector<vector<address>>[
+            vector<address>[player1_address],
+            vector<address>[player2_address]
         ];
         create_match(&game_admin_cap, teams);
     }

@@ -216,6 +216,15 @@ module aptos_arcade::elo {
         (elo_rating.rating, elo_rating.wins, elo_rating.losses)
     }
 
+    #[view]
+    /// gets whether or not a player has minted an ELO rating token for `GameType`
+    /// `player_address` - the player address
+    public fun has_player_minted<GameType>(player_address: address): bool acquires EloCollection {
+        let collection_address = get_elo_collection_address<GameType>();
+        let elo_collection = borrow_global<EloCollection<GameType>>(collection_address);
+        smart_table::contains(&elo_collection.player_has_minted, player_address)
+    }
+
     // assert statements
 
     /// asserts that an ELO collection does not exist for `GameType`
@@ -240,9 +249,7 @@ module aptos_arcade::elo {
     /// `player_address` - the player address
     fun assert_player_has_minted<GameType>(player_address: address) acquires EloCollection {
         assert_collection_exists<GameType>();
-        let collection_address = get_elo_collection_address<GameType>();
-        let elo_collection = borrow_global<EloCollection<GameType>>(collection_address);
-        assert!(smart_table::contains(&elo_collection.player_has_minted, player_address), EPLAYER_HAS_NOT_MINTED);
+        assert!(has_player_minted<GameType>(player_address), EPLAYER_HAS_NOT_MINTED);
     }
 
     // tests
