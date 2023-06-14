@@ -3,7 +3,7 @@ name = 'AptosArcadeCore'
 version = '1.0.0'
 
 [addresses]
-aptos_arcade = 'd0d068848da0d8b1eec5755c048142c8efecf8a2ac9e319d6f502358535f2590'
+aptos_arcade = '0xb2104bc99e57db595ad246a46ff3d57adce17fb33058703ae770c302d0a88b63'
 
 [dependencies.AptosFramework]
 git = 'https://github.com/aptos-labs/aptos-core.git'
