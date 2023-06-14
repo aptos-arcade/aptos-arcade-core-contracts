@@ -210,7 +210,7 @@ module aptos_arcade::game_admin {
             );
         };
 
-        if(is_one_to_one || soulbound) {
+        if(soulbound) {
             object::disable_ungated_transfer(&transfer_ref);
         };
 
