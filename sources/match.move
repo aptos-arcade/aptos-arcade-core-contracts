@@ -16,29 +16,23 @@ module aptos_arcade::match {
 
     // error codes
 
-    /// when a `MatchCollection` for a `GameType` already exists
-    const ECOLLECTION_ALREADY_EXISTS: u64 = 0;
-
-    /// when a `MatchCollection` for a `GameType` does not exist
-    const ECOLLECTION_DOES_NOT_EXIST: u64 = 1;
-
     /// when there are not enough teams
-    const ENOT_ENOUGH_TEAMS: u64 = 2;
+    const ENOT_ENOUGH_TEAMS: u64 = 0;
 
     /// when the teams are empty
-    const ETEAMS_EMPTY: u64 = 3;
+    const ETEAMS_EMPTY: u64 = 1;
 
     /// error code for when the teams are not the same length
-    const ETEAMS_NOT_SAME_LENGTH: u64 = 4;
+    const ETEAMS_NOT_SAME_LENGTH: u64 = 2;
 
     /// error code for when a player in the match has not registered an ELO token
-    const EPLAYER_HAS_NOT_REGISTERED_ELO_TOKEN: u64 = 5;
+    const EPLAYER_HAS_NOT_REGISTERED_ELO_TOKEN: u64 = 3;
 
     /// error code for when a match is already complete
-    const EMATCH_ALREADY_COMPLETE: u64 = 6;
+    const EMATCH_ALREADY_COMPLETE: u64 = 4;
 
     /// error code for when the winner index is invalid
-    const EINVALID_WINNER_INDEX: u64 = 7;
+    const EINVALID_WINNER_INDEX: u64 = 5;
 
     // constants
 
@@ -50,8 +44,6 @@ module aptos_arcade::match {
     const TOKEN_BASE_DESCRIPTION: vector<u8> = b"A match token for {}.";
     const TOKEN_URI: vector<u8> = b"aptos://match";
 
-    struct MatchCollection<phantom GameType> has key {}
-
     struct Match<phantom GameType> has key {
         teams: vector<vector<address>>,
         winner_index: Option<u64>
@@ -60,21 +52,14 @@ module aptos_arcade::match {
     /// initializes a `MatchCollection `for `GameType`
     /// `game_admin_cap` - reference to a `GameAdminCapability` for `GameType`
     public fun initialize_matches_collection<GameType: drop>(game_admin_cap: &GameAdminCapability<GameType>) {
-        // assert that the collection hasn't been initialized and that the signer is the struct creator
-        assert_collection_does_not_exist<GameType>();
-
         // initialize the match collection
-        let constructor_ref = game_admin::create_collection(
+        game_admin::create_collection(
             game_admin_cap,
             get_collection_description<GameType>(),
             get_collection_name<GameType>(),
             option::none(),
             get_collection_uri<GameType>()
         );
-
-        // add the collection resource to the collection object
-        let collection_signer = object::generate_signer(&constructor_ref);
-        move_to(&collection_signer, MatchCollection<GameType> {});
     }
 
     /// creates a match for `GameType` with `teams`
@@ -84,8 +69,6 @@ module aptos_arcade::match {
         game_admin_cap: &GameAdminCapability<GameType>,
         teams: vector<vector<address>>
     ): Object<Match<GameType>> {
-        // assert collection has been initialized and player has not minted
-        assert_collection_exists<GameType>();
         assert_more_than_one_team(&teams);
         assert_at_least_one_player_per_team(&teams);
         assert_teams_are_same_size(&teams);
@@ -185,16 +168,6 @@ module aptos_arcade::match {
 
     // assert statements
 
-    /// asserts that the collection has not been initialized
-    fun assert_collection_does_not_exist<GameType>() {
-        assert!(!exists<MatchCollection<GameType>>(get_matches_collection_address<GameType>()), ECOLLECTION_ALREADY_EXISTS);
-    }
-
-    /// asserts that the collection has been initialized
-    fun assert_collection_exists<GameType>() {
-        assert!(exists<MatchCollection<GameType>>(get_matches_collection_address<GameType>()), ECOLLECTION_DOES_NOT_EXIST);
-    }
-
     /// asserts that there are at least two teams
     /// `teams` - a vector of team vectors
     fun assert_more_than_one_team(teams: &vector<vector<address>>) {
@@ -249,6 +222,8 @@ module aptos_arcade::match {
     use std::signer;
     #[test_only]
     use aptos_token_objects::token;
+    #[test_only]
+    use aptos_arcade::game_admin::Collection;
 
     #[test_only]
     struct TestGame has drop {}
@@ -257,22 +232,13 @@ module aptos_arcade::match {
     fun test_initialize_matches_collection(aptos_arcade: &signer) {
         let game_admin_cap = game_admin::initialize(aptos_arcade, TestGame {});
         initialize_matches_collection(&game_admin_cap);
-        assert_collection_exists<TestGame>();
-        let collection_object = object::address_to_object<MatchCollection<TestGame>>(
+        let collection_object = object::address_to_object<Collection<TestGame>>(
             get_matches_collection_address<TestGame>()
         );
         assert!(collection::name(collection_object) == get_collection_name<TestGame>(), 0);
         assert!(collection::description(collection_object) == get_collection_description<TestGame>(), 0);
         assert!(collection::uri(collection_object) == get_collection_uri<TestGame>(), 0);
         assert!(*option::borrow(&collection::count(collection_object)) == 0, 0);
-    }
-
-    #[test(aptos_arcade=@aptos_arcade)]
-    #[expected_failure(abort_code=ECOLLECTION_ALREADY_EXISTS)]
-    fun test_initialize_matches_collection_twice(aptos_arcade: &signer) {
-        let game_admin_cap = game_admin::initialize(aptos_arcade, TestGame {});
-        initialize_matches_collection(&game_admin_cap);
-        initialize_matches_collection(&game_admin_cap);
     }
 
     #[test(aptos_arcade=@aptos_arcade, player1=@0x100, player2=@0x101)]
@@ -305,20 +271,6 @@ module aptos_arcade::match {
         assert!(*vector::borrow(vector::borrow(&teams, 0), 0) == player1_address, 0);
         assert!(*vector::borrow(vector::borrow(&teams, 1), 0) == player2_address, 0);
         assert!(winning_index == option::none(), 0);
-    }
-
-    #[test(aptos_arcade=@aptos_arcade, player1=@0x100, player2=@0x101)]
-    #[expected_failure(abort_code=ECOLLECTION_DOES_NOT_EXIST)]
-    fun test_create_match_without_collection(aptos_arcade: &signer, player1: &signer, player2: &signer) {
-        let game_admin_cap = game_admin::initialize(aptos_arcade, TestGame {});
-        let player1_address = signer::address_of(player1);
-        let player2_address = signer::address_of(player2);
-
-        let teams = vector<vector<address>>[
-            vector<address>[player1_address],
-            vector<address>[player2_address]
-        ];
-        create_match(&game_admin_cap, teams);
     }
 
     #[test(aptos_arcade=@aptos_arcade, player1=@0x100, player2=@0x101)]

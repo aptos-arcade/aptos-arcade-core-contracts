@@ -1,35 +1,25 @@
 module aptos_arcade::elo {
 
-    use std::signer;
     use std::string::{Self, String};
     use std::option;
     use std::vector;
 
     use aptos_std::type_info;
     use aptos_std::string_utils;
-    use aptos_std::smart_table::{Self, SmartTable};
 
     use aptos_framework::object;
 
-    use aptos_token_objects::collection;
-
-    use aptos_arcade::game_admin;
+    use aptos_arcade::game_admin::{Self, GameAdminCapability, PlayerCapability};
 
     friend aptos_arcade::match;
 
     // error codes
 
-    /// when an EloCollection for a `GameType` has already been initialized
-    const ECOLLECTION_ALREADY_EXISTS: u64 = 0;
-
-    /// when an EloCollection for a `GameType` has not been initialized
-    const ECOLLECTION_DOES_NOT_EXIST: u64 = 1;
-
     /// when a player has already minted an EloRating for a `GameType`
-    const EPLAYER_HAS_MINTED: u64 = 2;
+    const EPLAYER_HAS_MINTED: u64 = 0;
 
     /// when a player has not minted an EloRating for a `GameType`
-    const EPLAYER_HAS_NOT_MINTED: u64 = 3;
+    const EPLAYER_HAS_NOT_MINTED: u64 = 1;
 
     // constants
 
@@ -46,10 +36,6 @@ module aptos_arcade::elo {
 
     // structs
 
-    struct EloCollection<phantom GameType> has key {
-        player_has_minted: SmartTable<address, address>
-    }
-
     struct EloRating<phantom GameType> has key {
         rating: u64,
         wins: u64,
@@ -61,36 +47,21 @@ module aptos_arcade::elo {
     /// initializes an ELO collection for a game
     /// `game_signer` - must be the account that created `game_struct`
     public fun initialize_elo_collection<GameType: drop>(game_admin_cap: &GameAdminCapability<GameType>) {
-        // assert that the collection hasn't been initialized and that the signer is the struct creator
-        assert_collection_does_not_exist<GameType>();
-
         // create an ELO collection under the game admin signer
-        let construct_ref = game_admin::create_collection(
+        game_admin::create_one_to_one_collection(
             game_admin_cap,
             get_collection_description<GameType>(),
             get_collection_name<GameType>(),
             option::none(),
             string::utf8(COLLECTION_URI),
         );
-
-        // add the collection resource to the collection object
-        let collection_signer = object::generate_signer(&construct_ref);
-        move_to(&collection_signer, EloCollection<GameType> {
-            player_has_minted: smart_table::new(),
-        });
     }
 
     /// mints an ELO token for a player for `GameType`
     /// `player` - can only mint one ELO token per game
-    public fun mint_elo_token<GameType: drop>(player_cap: &PlayerCapability<GameType>) acquires EloCollection {
-        let player_address = game_admin::get_player_address(player_cap);
+    public fun mint_elo_token<GameType: drop>(player_cap: &PlayerCapability<GameType>) {
         // assert collection has been initialized and player has not minted
-        assert_collection_exists<GameType>();
-        assert_player_has_not_minted<GameType>(player_address);
-
-        // get a mutable reference to the collection resource
-        let collection_address = get_elo_collection_address<GameType>();
-        let elo_collection = borrow_global_mut<EloCollection<GameType>>(collection_address);
+        assert_player_has_not_minted<GameType>(game_admin::get_player_address(player_cap));
 
         // mint ELO token
         let constructor_ref = game_admin::mint_token_player(
@@ -110,17 +81,13 @@ module aptos_arcade::elo {
             wins: 0,
             losses: 0
         });
-
-        // add to player_has_minted
-        smart_table::add(&mut elo_collection.player_has_minted, player_address, signer::address_of(&token_signer));
     }
 
     /// updates the ELO ratings for a set of teams
     /// `teams` - a vector of vectors of player addresses
     /// `winner_index` - the index of the winning team
     public(friend) fun update_match_elo_ratings<GameType>(teams: vector<vector<address>>, winner_index: u64)
-    acquires EloCollection, EloRating {
-        assert_collection_exists<GameType>();
+    acquires EloRating {
         vector::enumerate_ref(&teams, |index, team| {
             update_team_elo_ratings<GameType>(*team, index == winner_index);
         });
@@ -132,14 +99,14 @@ module aptos_arcade::elo {
     fun update_team_elo_ratings<GameType>(
         team: vector<address>,
         win: bool
-    ) acquires EloCollection, EloRating {
+    ) acquires EloRating {
         vector::for_each(team, |player_address| update_player_elo_rating<GameType>(player_address, win));
     }
 
     /// updates the ELO rating for a player given the outcome of a match
     /// `elo_rating_object` - the ELO rating object for the player
     /// `win` - true if the player won, false if the player lost
-    fun update_player_elo_rating<GameType>(player_address: address, win: bool) acquires EloRating, EloCollection {
+    fun update_player_elo_rating<GameType>(player_address: address, win: bool) acquires EloRating {
         assert_player_has_minted<GameType>(player_address);
         let elo_rating_address = get_player_elo_object_address<GameType>(player_address);
         let elo_rating_object = object::address_to_object<EloRating<GameType>>(elo_rating_address);
@@ -191,25 +158,20 @@ module aptos_arcade::elo {
     #[view]
     /// gets the address of the ELO collection object for `GameType`
     public fun get_elo_collection_address<GameType>(): address {
-        collection::create_collection_address(
-            &game_admin::get_game_account_address<GameType>(),
-            &get_collection_name<GameType>()
-        )
+        game_admin::get_collection_address<GameType>(get_collection_name<GameType>())
     }
 
     #[view]
     /// gets the address of the ELO rating token for `player` in `GameType`
     /// `player_address` - the player whose ELO rating token address to get
-    public fun get_player_elo_object_address<GameType>(player_address: address): address acquires EloCollection {
-        let collection_address = get_elo_collection_address<GameType>();
-        let elo_collection = borrow_global_mut<EloCollection<GameType>>(collection_address);
-        *smart_table::borrow(&elo_collection.player_has_minted, player_address)
+    public fun get_player_elo_object_address<GameType>(player_address: address): address {
+        game_admin::get_player_token_address<GameType>(get_collection_name<GameType>(), player_address)
     }
 
     #[view]
     /// gets the ELO rating for `player` in `GameType`
     /// `player_address` - the player whose ELO rating to get
-    public fun get_player_elo_rating<GameType>(player_address: address): (u64, u64, u64) acquires EloRating, EloCollection {
+    public fun get_player_elo_rating<GameType>(player_address: address): (u64, u64, u64) acquires EloRating {
         let elo_rating_address = get_player_elo_object_address<GameType>(player_address);
         let elo_rating_object = object::address_to_object<EloRating<GameType>>(elo_rating_address);
         let elo_rating = borrow_global<EloRating<GameType>>(object::object_address(&elo_rating_object));
@@ -219,36 +181,21 @@ module aptos_arcade::elo {
     #[view]
     /// gets whether or not a player has minted an ELO rating token for `GameType`
     /// `player_address` - the player address
-    public fun has_player_minted<GameType>(player_address: address): bool acquires EloCollection {
-        let collection_address = get_elo_collection_address<GameType>();
-        let elo_collection = borrow_global<EloCollection<GameType>>(collection_address);
-        smart_table::contains(&elo_collection.player_has_minted, player_address)
+    public fun has_player_minted<GameType>(player_address: address): bool {
+        game_admin::has_player_received_token<GameType>(get_collection_name<GameType>(), player_address)
     }
 
     // assert statements
 
-    /// asserts that an ELO collection does not exist for `GameType`
-    fun assert_collection_does_not_exist<GameType>() {
-        assert!(!exists<EloCollection<GameType>>(get_elo_collection_address<GameType>()), ECOLLECTION_ALREADY_EXISTS);
-    }
-
-    /// asserts that an ELO collection exists for `GameType`
-    fun assert_collection_exists<GameType>() {
-        assert!(exists<EloCollection<GameType>>(get_elo_collection_address<GameType>()), ECOLLECTION_DOES_NOT_EXIST);
-    }
-
     /// asserts that a player has not minted an ELO token for `GameType`
     /// `player_address` - the player address
-    fun assert_player_has_not_minted<GameType>(player_address: address) acquires EloCollection {
-        let collection_address = get_elo_collection_address<GameType>();
-        let elo_collection = borrow_global<EloCollection<GameType>>(collection_address);
-        assert!(!smart_table::contains(&elo_collection.player_has_minted, player_address), EPLAYER_HAS_MINTED);
+    fun assert_player_has_not_minted<GameType>(player_address: address) {
+        assert!(!has_player_minted<GameType>(player_address),EPLAYER_HAS_MINTED);
     }
 
     /// asserts that a player has minted an ELO token for `GameType`
     /// `player_address` - the player address
-    fun assert_player_has_minted<GameType>(player_address: address) acquires EloCollection {
-        assert_collection_exists<GameType>();
+    fun assert_player_has_minted<GameType>(player_address: address) {
         assert!(has_player_minted<GameType>(player_address), EPLAYER_HAS_NOT_MINTED);
     }
 
@@ -258,15 +205,19 @@ module aptos_arcade::elo {
     struct TestGame has drop {}
 
     #[test_only]
+    use std::signer;
+    #[test_only]
     use aptos_token_objects::token;
-    use aptos_arcade::game_admin::{GameAdminCapability, PlayerCapability};
+    #[test_only]
+    use aptos_token_objects::collection;
+    #[test_only]
+    use aptos_arcade::game_admin::Collection;
 
     #[test(aptos_arcade=@aptos_arcade)]
     fun test_initialize_elo_collection(aptos_arcade: &signer) {
         let game_admin_cap = game_admin::initialize(aptos_arcade, TestGame {});
         initialize_elo_collection(&game_admin_cap);
-        assert_collection_exists<TestGame>();
-        let collection_object = object::address_to_object<EloCollection<TestGame>>(
+        let collection_object = object::address_to_object<Collection<TestGame>>(
             get_elo_collection_address<TestGame>()
         );
         assert!(collection::name(collection_object) == get_collection_name<TestGame>(), 0);
@@ -275,16 +226,8 @@ module aptos_arcade::elo {
         assert!(*option::borrow(&collection::count(collection_object)) == 0, 0);
     }
 
-    #[test(aptos_arcade=@aptos_arcade)]
-    #[expected_failure(abort_code=ECOLLECTION_ALREADY_EXISTS)]
-    fun test_initialize_elo_collection_twice(aptos_arcade: &signer) {
-        let game_admin_cap = game_admin::initialize(aptos_arcade, TestGame {});
-        initialize_elo_collection(&game_admin_cap);
-        initialize_elo_collection(&game_admin_cap);
-    }
-
     #[test(aptos_arcade=@aptos_arcade, player=@0x100)]
-    fun test_mint_token(aptos_arcade: &signer, player: &signer) acquires EloCollection, EloRating {
+    fun test_mint_token(aptos_arcade: &signer, player: &signer) acquires EloRating {
         let game_admin_cap = game_admin::initialize(aptos_arcade, TestGame {});
         initialize_elo_collection(&game_admin_cap);
         mint_elo_token(&game_admin::create_player_capability(player, TestGame {}));
@@ -308,7 +251,7 @@ module aptos_arcade::elo {
 
     #[test(aptos_arcade=@aptos_arcade, player=@0x100)]
     #[expected_failure(abort_code=EPLAYER_HAS_MINTED)]
-    fun test_mint_token_twice(aptos_arcade: &signer, player: &signer) acquires EloCollection {
+    fun test_mint_token_twice(aptos_arcade: &signer, player: &signer) {
         let game_admin_cap = game_admin::initialize(aptos_arcade, TestGame {});
         initialize_elo_collection(&game_admin_cap);
         mint_elo_token(&game_admin::create_player_capability(player, TestGame {}));
@@ -316,14 +259,7 @@ module aptos_arcade::elo {
     }
 
     #[test(aptos_arcade=@aptos_arcade, player=@0x100)]
-    #[expected_failure(abort_code=ECOLLECTION_DOES_NOT_EXIST)]
-    fun test_mint_token_without_collection(aptos_arcade: &signer, player: &signer) acquires EloCollection {
-        game_admin::initialize(aptos_arcade, TestGame {});
-        mint_elo_token(&game_admin::create_player_capability(player, TestGame {}));
-    }
-
-    #[test(aptos_arcade=@aptos_arcade, player=@0x100)]
-    fun test_update_player_elo_rating(aptos_arcade: &signer, player: &signer) acquires EloCollection, EloRating {
+    fun test_update_player_elo_rating(aptos_arcade: &signer, player: &signer) acquires EloRating {
         let game_admin_cap = game_admin::initialize(aptos_arcade, TestGame {});
         initialize_elo_collection(&game_admin_cap);
         mint_elo_token(&game_admin::create_player_capability(player, TestGame {}));
@@ -356,24 +292,16 @@ module aptos_arcade::elo {
     }
 
     #[test(aptos_arcade=@aptos_arcade, player=@0x100)]
-    #[expected_failure(abort_code=ECOLLECTION_DOES_NOT_EXIST)]
-    fun test_update_player_elo_rating_before_collection_init(aptos_arcade: &signer, player: &signer)
-    acquires EloCollection, EloRating {
-        game_admin::initialize(aptos_arcade, TestGame {});
-        update_player_elo_rating<TestGame>(signer::address_of(player), true);
-    }
-
-    #[test(aptos_arcade=@aptos_arcade, player=@0x100)]
     #[expected_failure(abort_code=EPLAYER_HAS_NOT_MINTED)]
     fun test_update_player_elo_rating_before_mint(aptos_arcade: &signer, player: &signer)
-    acquires EloCollection, EloRating {
+    acquires EloRating {
         let game_admin_cap = game_admin::initialize(aptos_arcade, TestGame {});
         initialize_elo_collection(&game_admin_cap);
         update_player_elo_rating<TestGame>(signer::address_of(player), true);
     }
 
     #[test(aptos_arcade=@aptos_arcade, player1=@0x100, player2=@0x101)]
-    fun test_update_team_elo_rating(aptos_arcade: &signer, player1: &signer, player2: &signer) acquires EloCollection, EloRating {
+    fun test_update_team_elo_rating(aptos_arcade: &signer, player1: &signer, player2: &signer) acquires EloRating {
         let game_admin_cap = game_admin::initialize(aptos_arcade, TestGame {});
         initialize_elo_collection(&game_admin_cap);
         mint_elo_token(&game_admin::create_player_capability(player1, TestGame {}));
@@ -409,18 +337,9 @@ module aptos_arcade::elo {
     }
 
     #[test(aptos_arcade=@aptos_arcade, player1=@0x100, player2=@0x101)]
-    #[expected_failure(abort_code=ECOLLECTION_DOES_NOT_EXIST)]
-    fun test_update_team_elo_rating_before_collection_init(aptos_arcade: &signer, player1: &signer, player2: &signer)
-    acquires EloCollection, EloRating {
-        game_admin::initialize(aptos_arcade, TestGame {});
-        let team = vector<address>[signer::address_of(player1), signer::address_of(player2)];
-        update_team_elo_ratings<TestGame>(team, true);
-    }
-
-    #[test(aptos_arcade=@aptos_arcade, player1=@0x100, player2=@0x101)]
     #[expected_failure(abort_code=EPLAYER_HAS_NOT_MINTED)]
     fun test_update_team_elo_rating_before_mint(aptos_arcade: &signer, player1: &signer, player2: &signer)
-    acquires EloCollection, EloRating {
+    acquires EloRating {
         let game_admin_cap = game_admin::initialize(aptos_arcade, TestGame {});
         initialize_elo_collection(&game_admin_cap);
         mint_elo_token(&game_admin::create_player_capability(player1, TestGame {}));
@@ -435,7 +354,7 @@ module aptos_arcade::elo {
         player2: &signer,
         player3: &signer,
         player4: &signer
-    ) acquires EloCollection, EloRating {
+    ) acquires EloRating {
         let game_admin_cap = game_admin::initialize(aptos_arcade, TestGame {});
         initialize_elo_collection(&game_admin_cap);
         mint_elo_token(&game_admin::create_player_capability(player1, TestGame {}));
@@ -474,22 +393,6 @@ module aptos_arcade::elo {
     }
 
     #[test(aptos_arcade=@aptos_arcade, player1=@0x100, player2=@0x101, player3=@0x102, player4=@0x103)]
-    #[expected_failure(abort_code=ECOLLECTION_DOES_NOT_EXIST)]
-    fun test_update_match_elo_rating_before_collection_init(
-        aptos_arcade: &signer,
-        player1: &signer,
-        player2: &signer,
-        player3: &signer,
-        player4: &signer
-    ) acquires EloCollection, EloRating {
-        game_admin::initialize(aptos_arcade, TestGame {});
-        let team1 = vector<address>[signer::address_of(player1), signer::address_of(player2)];
-        let team2 = vector<address>[signer::address_of(player3), signer::address_of(player4)];
-        let teams = vector<vector<address>>[team1, team2];
-        update_match_elo_ratings<TestGame>(teams, 0);
-    }
-
-    #[test(aptos_arcade=@aptos_arcade, player1=@0x100, player2=@0x101, player3=@0x102, player4=@0x103)]
     #[expected_failure(abort_code=EPLAYER_HAS_NOT_MINTED)]
     fun test_update_match_elo_rating_before_mint(
         aptos_arcade: &signer,
@@ -497,7 +400,7 @@ module aptos_arcade::elo {
         player2: &signer,
         player3: &signer,
         player4: &signer
-    ) acquires EloCollection, EloRating {
+    ) acquires EloRating {
         let game_admin_cap = game_admin::initialize(aptos_arcade, TestGame {});
         initialize_elo_collection(&game_admin_cap);
         mint_elo_token(&game_admin::create_player_capability(player1, TestGame {}));
