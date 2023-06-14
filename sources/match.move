@@ -80,8 +80,7 @@ module aptos_arcade::match {
     /// `witness` - a witness for `GameType`
     /// `teams` - a vector of teams, where each team is a vector of player addresses
     public fun create_match<GameType: drop>(
-        game_admin: &signer,
-        witness: GameType,
+        game_admin_cap: &GameAdminCapability<GameType>,
         teams: vector<vector<address>>
     ): Object<Match<GameType>> {
         // assert collection has been initialized and player has not minted
@@ -91,9 +90,8 @@ module aptos_arcade::match {
         assert_teams_are_same_size(&teams);
 
         // mint a token for a player
-        let game_admin_cap = game_admin::create_game_admin_capability(game_admin, witness);
         let constructor_ref = game_admin::mint_token_game_admin(
-            &game_admin_cap,
+            game_admin_cap,
             get_collection_name<GameType>(),
             get_match_description<GameType>(),
             get_match_name<GameType>(),
@@ -120,7 +118,7 @@ module aptos_arcade::match {
     /// `match` - the match to set the winner for
     /// `winner_index` - the index of the winning team
     public fun set_match_result<GameType>(
-        _game_admin_cap: GameAdminCapability<GameType>,
+        _game_admin_cap: &GameAdminCapability<GameType>,
         match: Object<Match<GameType>>,
         winner_index: u64
     ) acquires Match {
@@ -271,7 +269,7 @@ module aptos_arcade::match {
             vector<address>[player1_address],
             vector<address>[player2_address]
         ];
-        let match_object = create_match(aptos_arcade, TestGame {}, teams);
+        let match_object = create_match(&game_admin_cap, teams);
 
         assert!(token::name(match_object) == get_match_name<TestGame>(), 0);
         assert!(token::description(match_object) == get_match_description<TestGame>(), 0);
@@ -290,7 +288,7 @@ module aptos_arcade::match {
     #[test(aptos_arcade=@aptos_arcade, player1=@0x100, player2=@0x101)]
     #[expected_failure(abort_code=ECOLLECTION_DOES_NOT_EXIST)]
     fun test_create_match_without_collection(aptos_arcade: &signer, player1: &signer, player2: &signer) {
-        game_admin::initialize(aptos_arcade, TestGame {});
+        let game_admin_cap = game_admin::initialize(aptos_arcade, TestGame {});
         let player1_address = signer::address_of(player1);
         let player2_address = signer::address_of(player2);
 
@@ -298,7 +296,7 @@ module aptos_arcade::match {
             vector<address>[player1_address],
             vector<address>[player2_address]
         ];
-        create_match(aptos_arcade, TestGame {}, teams);
+        create_match(&game_admin_cap, teams);
     }
 
     #[test(aptos_arcade=@aptos_arcade, player1=@0x100, player2=@0x101)]
@@ -310,7 +308,7 @@ module aptos_arcade::match {
         let player2_address = signer::address_of(player2);
 
         let teams = vector<vector<address>>[vector<address>[player1_address, player2_address]];
-        create_match(aptos_arcade, TestGame {}, teams);
+        create_match(&game_admin_cap, teams);
     }
 
     #[test(aptos_arcade=@aptos_arcade)]
@@ -319,7 +317,7 @@ module aptos_arcade::match {
         let game_admin_cap = game_admin::initialize(aptos_arcade, TestGame {});
         initialize_matches_collection(&game_admin_cap);
         let teams = vector<vector<address>>[vector<address>[], vector<address>[]];
-        create_match(aptos_arcade, TestGame {}, teams);
+        create_match(&game_admin_cap, teams);
     }
 
     #[test(aptos_arcade=@aptos_arcade, player1=@0x100, player2=@0x101, player3=@0x102)]
@@ -336,7 +334,7 @@ module aptos_arcade::match {
             vector<address>[player1_address, player2_address],
             vector<address>[player3_address]
         ];
-        create_match(aptos_arcade, TestGame {}, teams);
+        create_match(&game_admin_cap, teams);
     }
 
     #[test(aptos_arcade=@aptos_arcade, player1=@0x100, player2=@0x101)]
@@ -355,10 +353,10 @@ module aptos_arcade::match {
             vector<address>[player1_address],
             vector<address>[player2_address]
         ];
-        let match_object = create_match(aptos_arcade, TestGame {}, teams);
+        let match_object = create_match(&game_admin_cap, teams);
 
         set_match_result(
-            game_admin::create_game_admin_capability(aptos_arcade, TestGame {}),
+            &game_admin_cap,
             match_object,
             0
         );
@@ -381,15 +379,15 @@ module aptos_arcade::match {
             vector<address>[player1_address],
             vector<address>[player2_address]
         ];
-        let match_object = create_match(aptos_arcade, TestGame {}, teams);
+        let match_object = create_match(&game_admin_cap, teams);
 
         set_match_result(
-            game_admin::create_game_admin_capability(aptos_arcade, TestGame {}),
+            &game_admin_cap,
             match_object,
             0
         );
         set_match_result(
-            game_admin::create_game_admin_capability(aptos_arcade, TestGame {}),
+            &game_admin_cap,
             match_object,
             1
         );
@@ -412,10 +410,10 @@ module aptos_arcade::match {
             vector<address>[player1_address],
             vector<address>[player2_address]
         ];
-        let match_object = create_match(aptos_arcade, TestGame {}, teams);
+        let match_object = create_match(&game_admin_cap, teams);
 
         set_match_result(
-            game_admin::create_game_admin_capability(aptos_arcade, TestGame {}),
+            &game_admin_cap,
             match_object,
             2
         );
