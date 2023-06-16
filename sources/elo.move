@@ -48,12 +48,15 @@ module aptos_arcade::elo {
     /// `game_signer` - must be the account that created `game_struct`
     public fun initialize_elo_collection<GameType: drop>(game_admin_cap: &GameAdminCapability<GameType>) {
         // create an ELO collection under the game admin signer
-        game_admin::create_one_to_one_collection(
+        game_admin::create_collection(
             game_admin_cap,
             get_collection_description<GameType>(),
             get_collection_name<GameType>(),
             option::none(),
             string::utf8(COLLECTION_URI),
+            true,
+            true,
+            true
         );
     }
 
@@ -71,7 +74,6 @@ module aptos_arcade::elo {
             get_token_name<GameType>(),
             option::none(),
             get_token_uri<GameType>(),
-            true
         );
 
         // add ELO rating resource

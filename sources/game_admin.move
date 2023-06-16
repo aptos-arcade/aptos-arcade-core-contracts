@@ -3,7 +3,7 @@ module aptos_arcade::game_admin {
     use std::signer;
     use std::vector;
     use std::string::String;
-    use std::option::Option;
+    use std::option::{Self, Option};
 
     use aptos_std::type_info;
     use aptos_std::smart_table::{Self, SmartTable};
@@ -33,7 +33,11 @@ module aptos_arcade::game_admin {
     const ECOLLECTION_NOT_INITIALIZED: u64 = 4;
 
     /// when a player has already received a one-to-one token
-    const EPLAYER_ALREADY_RECEIVED_ONE_TO_ONE_TOKEN: u64 = 5;
+    const EALREADY_MINTED_ONE_TO_ONE_TOKEN: u64 = 5;
+
+    /// when a collection does not allow player mint
+    const ECOLLECTION_DOES_NOT_ALLOW_PLAYER_MINT: u64 = 6;
+
 
     // constants
 
@@ -46,12 +50,14 @@ module aptos_arcade::game_admin {
         signer_cap: SignerCapability
     }
 
-    struct Collection<phantom GameType> has key {}
-
-    /// tracks whether a player has receieved a one-to-one token
-    struct OneToOneCollection has key {
-        player_to_token: SmartTable<address, address>
+    /// holds information about a collection
+    struct Collection<phantom GameType> has key {
+        soulbound: bool,
+        can_player_mint: bool,
+        one_to_one_mapping: Option<SmartTable<address, address>>
     }
+
+    // access control structs
 
     /// used to access game admin functions
     struct GameAdminCapability<phantom GameType> has drop {}
@@ -82,15 +88,21 @@ module aptos_arcade::game_admin {
     /// `name` - name of the collection
     /// `royalty` - royalty of the collection
     /// `uri` - uri of the collection
+    /// `soulbound` - whether the collection is soulbound
+    /// `can_player_mint` - whether the collection allows player mint
+    /// `one_to_one` - whether the collection is one-to-one
     public fun create_collection<GameType>(
-        game_admin_cap: &GameAdminCapability<GameType>,
+        _game_admin_cap: &GameAdminCapability<GameType>,
         descripion: String,
         name: String,
         royalty: Option<Royalty>,
         uri: String,
+        soulbound: bool,
+        can_player_mint: bool,
+        one_to_one: bool,
     ): ConstructorRef acquires GameAdmin {
         assert_collection_not_initialized<GameType>(name);
-        let game_account_signer = get_game_account_signer_admin(game_admin_cap);
+        let game_account_signer = get_game_account_signer<GameType>();
         let constructor_ref = collection::create_unlimited_collection(
             &game_account_signer,
             descripion,
@@ -99,38 +111,16 @@ module aptos_arcade::game_admin {
             uri
         );
 
-        let collection_signer = object::generate_signer(&constructor_ref);
-        move_to(&collection_signer, Collection<GameType> {});
-
-        constructor_ref
-    }
-
-    /// creates a collection with one token per account for the given `GameType` under the game admin resource account
-    /// `game_admin_cap` - must be a game admin capability for the given `GameType`
-    /// `description` - description of the collection
-    /// `name` - name of the collection
-    /// `royalty` - royalty of the collection
-    /// `uri` - uri of the collection
-    public fun create_one_to_one_collection<GameType>(
-        game_admin_cap: &GameAdminCapability<GameType>,
-        descripion: String,
-        name: String,
-        royalty: Option<Royalty>,
-        uri: String,
-    ): ConstructorRef acquires GameAdmin {
-        let constructor_ref = create_collection(
-            game_admin_cap,
-            descripion,
-            name,
-            royalty,
-            uri
-        );
-
-        let one_to_one_collection = OneToOneCollection {
-            player_to_token: smart_table::new()
+        let one_to_one_mapping = if(one_to_one) {
+            option::some(smart_table::new())
+        } else {
+            option::none()
         };
-        let collection_signer = object::generate_signer(&constructor_ref);
-        move_to(&collection_signer, one_to_one_collection);
+        move_to(&object::generate_signer(&constructor_ref), Collection<GameType> {
+            soulbound,
+            can_player_mint,
+            one_to_one_mapping
+        });
 
         constructor_ref
     }
@@ -142,23 +132,23 @@ module aptos_arcade::game_admin {
     /// `token_name` - name of the token
     /// `royalty` - royalty of the token
     /// `uri` - uri of the token
+    /// `to_address` - address to mint the token to
     public fun mint_token_game_admin<GameType>(
-        game_admin_cap: &GameAdminCapability<GameType>,
+        _game_admin_cap: &GameAdminCapability<GameType>,
         collection_name: String,
         token_description: String,
         token_name: String,
         royalty: Option<Royalty>,
         uri: String,
-    ): ConstructorRef acquires GameAdmin {
-        assert_collection_initialized<GameType>(collection_name);
-        let game_account_signer = get_game_account_signer_admin(game_admin_cap);
-        token::create_from_account(
-            &game_account_signer,
+        to_address: address
+    ): ConstructorRef acquires GameAdmin, Collection {
+        mint_token<GameType>(
             collection_name,
             token_description,
             token_name,
             royalty,
-            uri
+            uri,
+            to_address
         )
     }
 
@@ -177,17 +167,42 @@ module aptos_arcade::game_admin {
         token_name: String,
         royalty: Option<Royalty>,
         uri: String,
-        soulbound: bool
-    ): ConstructorRef acquires GameAdmin, OneToOneCollection {
-        assert_collection_initialized<GameType>(collection_name);
-        let is_one_to_one = is_collection_one_to_one<GameType>(collection_name);
-        if(is_one_to_one) {
-            assert_player_can_mint_one_to_one<GameType>(player_cap.player_address, collection_name);
-        };
+    ): ConstructorRef acquires GameAdmin, Collection {
+        assert_player_can_mint<GameType>(collection_name);
+        mint_token<GameType>(
+            collection_name,
+            token_description,
+            token_name,
+            royalty,
+            uri,
+            player_cap.player_address
+        )
+    }
 
-        let game_account_signer = get_game_account_signer_player(player_cap);
+    /// mints a token for `collection_name` for the given `GameType` under the game admin resource account
+    /// `game_admin_cap` - must be a game admin capability for the given `GameType`
+    /// `collection_name` - name of the collection
+    /// `token_description` - description of the token
+    /// `token_name` - name of the token
+    /// `royalty` - royalty of the token
+    /// `uri` - uri of the token
+    /// `to_address` - address to mint the token to
+    fun mint_token<GameType>(
+        collection_name: String,
+        token_description: String,
+        token_name: String,
+        royalty: Option<Royalty>,
+        uri: String,
+        to_address: address
+    ): ConstructorRef acquires GameAdmin, Collection {
+        assert_collection_initialized<GameType>(collection_name);
+
+        let collection = borrow_global_mut<Collection<GameType>>(
+            get_collection_address<GameType>(collection_name)
+        );
+
         let constructor_ref = token::create_from_account(
-            &game_account_signer,
+            &get_game_account_signer<GameType>(),
             collection_name,
             token_description,
             token_name,
@@ -195,22 +210,23 @@ module aptos_arcade::game_admin {
             uri
         );
 
-        let transfer_ref = object::generate_transfer_ref(&constructor_ref);
-        let linear_transfer_ref = object::generate_linear_transfer_ref(&transfer_ref);
-        object::transfer_with_ref(linear_transfer_ref, get_player_address(player_cap));
-
-        if(is_one_to_one) {
-            let one_to_one_collection = borrow_global_mut<OneToOneCollection>(
-                get_collection_address<GameType>(collection_name)
+        if(option::is_some(&collection.one_to_one_mapping))
+        {
+            assert_can_mint_one_to_one<GameType>(
+                option::borrow(&collection.one_to_one_mapping),
+                to_address
             );
             smart_table::add(
-                &mut one_to_one_collection.player_to_token,
-                player_cap.player_address,
+                option::borrow_mut(&mut collection.one_to_one_mapping),
+                to_address,
                 object::address_from_constructor_ref(&constructor_ref)
             );
         };
 
-        if(soulbound) {
+        let transfer_ref = object::generate_transfer_ref(&constructor_ref);
+        let linear_transfer_ref = object::generate_linear_transfer_ref(&transfer_ref);
+        object::transfer_with_ref(linear_transfer_ref, to_address);
+        if(collection.soulbound) {
             object::disable_ungated_transfer(&transfer_ref);
         };
 
@@ -247,16 +263,7 @@ module aptos_arcade::game_admin {
     // signer helpers
 
     /// returns the signer of the game admin resource account for the given `GameType`
-    /// `game_admin_cap` - must be a game admin capability for the given `GameType`
-    fun get_game_account_signer_admin<GameType>(_admin_cap: &GameAdminCapability<GameType>): signer acquires GameAdmin {
-        let game_admin_address = type_info::account_address(&type_info::type_of<GameType>());
-        let game_admin = borrow_global<GameAdmin<GameType>>(game_admin_address);
-        account::create_signer_with_capability(&game_admin.signer_cap)
-    }
-
-    /// returns the signer of the player resource account for the given `GameType`
-    /// `player_cap` - must be a player capability for the given `GameType`
-    fun get_game_account_signer_player<GameType>(_player_cap: &PlayerCapability<GameType>): signer acquires GameAdmin {
+    fun get_game_account_signer<GameType>(): signer acquires GameAdmin {
         let game_admin_address = type_info::account_address(&type_info::type_of<GameType>());
         let game_admin = borrow_global<GameAdmin<GameType>>(game_admin_address);
         account::create_signer_with_capability(&game_admin.signer_cap)
@@ -293,9 +300,10 @@ module aptos_arcade::game_admin {
     #[view]
     /// returns whether a collection is one-to-one
     /// `collection_name` - name of the collection
-    public fun is_collection_one_to_one<GameType>(collection_name: String): bool {
+    public fun is_collection_one_to_one<GameType>(collection_name: String): bool acquires Collection {
         let collection_address = get_collection_address<GameType>(collection_name);
-        exists<OneToOneCollection>(collection_address)
+        let collection = borrow_global<Collection<GameType>>(collection_address);
+        option::is_some(&collection.one_to_one_mapping)
     }
 
     #[view]
@@ -303,10 +311,10 @@ module aptos_arcade::game_admin {
     /// `collection_name` - name of the collection
     /// `player_address` - address of the player
     public fun has_player_received_token<GameType>(collection_name: String, player_address: address): bool
-    acquires OneToOneCollection {
+    acquires Collection {
         let collection_address = get_collection_address<GameType>(collection_name);
-        let collection = borrow_global<OneToOneCollection>(collection_address);
-        smart_table::contains(&collection.player_to_token, player_address)
+        let collection = borrow_global<Collection<GameType>>(collection_address);
+        smart_table::contains(option::borrow(&collection.one_to_one_mapping), player_address)
     }
 
     #[view]
@@ -314,10 +322,10 @@ module aptos_arcade::game_admin {
     /// `collection_name` - name of the collection
     /// `player_address` - address of the player
     public fun get_player_token_address<GameType>(collection_name: String, player_address: address): address
-    acquires OneToOneCollection {
+    acquires Collection {
         let collection_address = get_collection_address<GameType>(collection_name);
-        let collection = borrow_global<OneToOneCollection>(collection_address);
-        *smart_table::borrow(&collection.player_to_token, player_address)
+        let collection = borrow_global<Collection<GameType>>(collection_address);
+        *smart_table::borrow(option::borrow(&collection.one_to_one_mapping), player_address)
     }
 
     // helper functions
@@ -364,21 +372,24 @@ module aptos_arcade::game_admin {
         assert!(does_collection_exist<GameType>(collection_name), ECOLLECTION_NOT_INITIALIZED)
     }
 
-    /// asserts that a player can mint a one-to-one token
-    fun assert_player_can_mint_one_to_one<GameType>(player_address: address, collection_name: String)
-    acquires OneToOneCollection {
-        assert!(
-            !has_player_received_token<GameType>(collection_name, player_address),
-            EPLAYER_ALREADY_RECEIVED_ONE_TO_ONE_TOKEN
-        );
+    /// asserts that an address can mint a one-to-one token
+    fun assert_can_mint_one_to_one<GameType>(one_to_one_mapping: &SmartTable<address, address>, to_address: address) {
+        assert!(!smart_table::contains(one_to_one_mapping, to_address), EALREADY_MINTED_ONE_TO_ONE_TOKEN);
+    }
+
+    /// asserts that a player can mint a token
+    /// `collection_name` - name of the collection
+    fun assert_player_can_mint<GameType>(collection_name: String) acquires Collection {
+        let collection_address = get_collection_address<GameType>(collection_name);
+        let collection = borrow_global<Collection<GameType>>(collection_address);
+        assert!(collection.can_player_mint, ECOLLECTION_DOES_NOT_ALLOW_PLAYER_MINT);
+
     }
 
     // tests
 
     #[test_only]
     use std::string;
-    #[test_only]
-    use std::option;
     #[test_only]
     use aptos_token_objects::token::Token;
 
@@ -406,11 +417,9 @@ module aptos_arcade::game_admin {
     }
 
     #[test(aptos_arcade=@aptos_arcade)]
-    fun test_create_game_admin_cap(aptos_arcade: &signer) acquires GameAdmin {
+    fun test_create_game_admin_cap(aptos_arcade: &signer) {
         initialize<TestGame>(aptos_arcade, TestGame {});
-        let admin_cap = create_game_admin_capability<TestGame>(aptos_arcade, TestGame {});
-        let admin_signer = get_game_account_signer_admin(&admin_cap);
-        assert!(signer::address_of(&admin_signer) == get_game_account_address<TestGame>(), 0);
+        create_game_admin_capability<TestGame>(aptos_arcade, TestGame {});
     }
 
     #[test(aptos_arcade=@aptos_arcade, not_aptos_arcade=@0x100)]
@@ -427,11 +436,10 @@ module aptos_arcade::game_admin {
     }
 
     #[test(aptos_arcade=@aptos_arcade, player=@0x100)]
-    fun test_create_player_cap(aptos_arcade: &signer, player: &signer) acquires GameAdmin {
+    fun test_create_player_cap(aptos_arcade: &signer, player: &signer) {
         initialize<TestGame>(aptos_arcade, TestGame {});
-        let admin_cap = create_player_capability<TestGame>(player, TestGame {});
-        let admin_signer = get_game_account_signer_player(&admin_cap);
-        assert!(signer::address_of(&admin_signer) == get_game_account_address<TestGame>(), 0);
+        let player_cap = create_player_capability<TestGame>(player, TestGame {});
+        assert!(signer::address_of(player) == get_player_address(&player_cap), 0);
     }
 
     #[test(player=@0x100)]
@@ -454,6 +462,9 @@ module aptos_arcade::game_admin {
             collection_name,
             collection_royalty,
             collection_uri,
+            false,
+            false,
+            false
         );
         assert_collection_initialized<TestGame>(collection_name);
         let collection_object = object::object_from_constructor_ref<Collection<TestGame>>(&constructor_ref);
@@ -478,6 +489,9 @@ module aptos_arcade::game_admin {
             collection_name,
             collection_royalty,
             collection_uri,
+            false,
+            false,
+            false
         );
         create_collection(
             &admin_cap,
@@ -485,29 +499,35 @@ module aptos_arcade::game_admin {
             collection_name,
             collection_royalty,
             collection_uri,
+            false,
+            false,
+            false
         );
     }
 
     #[test(aptos_arcade=@aptos_arcade)]
-    fun test_create_one_to_one_collection(aptos_arcade: &signer) acquires GameAdmin {
+    fun test_create_one_to_one_collection(aptos_arcade: &signer) acquires GameAdmin, Collection {
         initialize<TestGame>(aptos_arcade, TestGame {});
         let admin_cap = create_game_admin_capability<TestGame>(aptos_arcade, TestGame {});
         let collection_name = string::utf8(b"test_collection");
         let collection_description = string::utf8(b"test_description");
         let collection_uri = string::utf8(b"test_uri");
         let collection_royalty = option::none<Royalty>();
-        create_one_to_one_collection(
+        create_collection(
             &admin_cap,
             collection_description,
             collection_name,
             collection_royalty,
             collection_uri,
+            false,
+            false,
+            true
         );
         assert!(is_collection_one_to_one<TestGame>(collection_name), 0)
     }
 
     #[test(aptos_arcade=@aptos_arcade)]
-    fun test_mint_token_admin(aptos_arcade: &signer) acquires GameAdmin {
+    fun test_mint_token_admin(aptos_arcade: &signer) acquires GameAdmin, Collection {
         initialize<TestGame>(aptos_arcade, TestGame {});
         let admin_cap = create_game_admin_capability<TestGame>(aptos_arcade, TestGame {});
 
@@ -521,6 +541,9 @@ module aptos_arcade::game_admin {
             collection_name,
             collection_royalty,
             collection_uri,
+            false,
+            false,
+            false
         );
 
         let token_name = string::utf8(b"test_token");
@@ -533,7 +556,8 @@ module aptos_arcade::game_admin {
             token_description,
             token_name,
             token_royalty,
-            token_uri
+            token_uri,
+            get_game_account_address<TestGame>()
         );
         let token_object = object::object_from_constructor_ref<Token>(&token_constructor_ref);
         assert!(token::creator(token_object) == get_game_account_address<TestGame>(), 0);
@@ -545,7 +569,7 @@ module aptos_arcade::game_admin {
 
     #[test(aptos_arcade=@aptos_arcade)]
     #[expected_failure(abort_code=ECOLLECTION_NOT_INITIALIZED)]
-    fun test_mint_token_admin_collection_does_not_exist(aptos_arcade: &signer) acquires GameAdmin {
+    fun test_mint_token_admin_collection_does_not_exist(aptos_arcade: &signer) acquires GameAdmin, Collection {
         initialize<TestGame>(aptos_arcade, TestGame {});
         let admin_cap = create_game_admin_capability<TestGame>(aptos_arcade, TestGame {});
 
@@ -560,13 +584,14 @@ module aptos_arcade::game_admin {
             token_description,
             token_name,
             token_royalty,
-            token_uri
+            token_uri,
+            get_game_account_address<TestGame>()
         );
     }
 
     #[test(aptos_arcade=@aptos_arcade, player=@0x100)]
     fun test_mint_token_transferrable_player(aptos_arcade: &signer, player: &signer)
-    acquires GameAdmin, OneToOneCollection {
+    acquires GameAdmin, Collection {
         initialize<TestGame>(aptos_arcade, TestGame {});
         let admin_cap = create_game_admin_capability<TestGame>(aptos_arcade, TestGame {});
 
@@ -579,7 +604,10 @@ module aptos_arcade::game_admin {
             collection_description,
             collection_name,
             collection_royalty,
-            collection_uri
+            collection_uri,
+            false,
+            true,
+            false
         );
 
         let player_cap = create_player_capability<TestGame>(player, TestGame {});
@@ -594,7 +622,6 @@ module aptos_arcade::game_admin {
             token_name,
             token_royalty,
             token_uri,
-            false
         );
         let token_object = object::object_from_constructor_ref<Token>(&token_constructor_ref);
         assert!(token::creator(token_object) == get_game_account_address<TestGame>(), 0);
@@ -608,7 +635,7 @@ module aptos_arcade::game_admin {
 
     #[test(aptos_arcade=@aptos_arcade, player=@0x100)]
     fun test_mint_token_nontransferrable_player(aptos_arcade: &signer, player: &signer)
-    acquires GameAdmin, OneToOneCollection {
+    acquires GameAdmin, Collection {
         initialize<TestGame>(aptos_arcade, TestGame {});
         let admin_cap = create_game_admin_capability<TestGame>(aptos_arcade, TestGame {});
 
@@ -621,7 +648,10 @@ module aptos_arcade::game_admin {
             collection_description,
             collection_name,
             collection_royalty,
-            collection_uri
+            collection_uri,
+            true,
+            true,
+            false
         );
 
         let player_cap = create_player_capability<TestGame>(player, TestGame {});
@@ -636,7 +666,6 @@ module aptos_arcade::game_admin {
             token_name,
             token_royalty,
             token_uri,
-            true
         );
         let token_object = object::object_from_constructor_ref<Token>(&token_constructor_ref);
         assert!(token::creator(token_object) == get_game_account_address<TestGame>(), 0);
@@ -649,7 +678,7 @@ module aptos_arcade::game_admin {
 
     #[test(aptos_arcade=@aptos_arcade, player=@0x100)]
     fun test_mint_token_one_to_one_collection(aptos_arcade: &signer, player: &signer)
-    acquires GameAdmin, OneToOneCollection {
+    acquires GameAdmin, Collection {
         initialize<TestGame>(aptos_arcade, TestGame {});
         let admin_cap = create_game_admin_capability<TestGame>(aptos_arcade, TestGame {});
 
@@ -657,12 +686,15 @@ module aptos_arcade::game_admin {
         let collection_description = string::utf8(b"test_description");
         let collection_uri = string::utf8(b"test_uri");
         let collection_royalty = option::none<Royalty>();
-        create_one_to_one_collection(
+        create_collection(
             &admin_cap,
             collection_description,
             collection_name,
             collection_royalty,
-            collection_uri
+            collection_uri,
+            true,
+            true,
+            true
         );
 
         let player_cap = create_player_capability<TestGame>(player, TestGame {});
@@ -677,7 +709,6 @@ module aptos_arcade::game_admin {
             token_name,
             token_royalty,
             token_uri,
-            true
         );
         let token_object = object::object_from_constructor_ref<Token>(&token_constructor_ref);
         let player_address = signer::address_of(player);
@@ -689,12 +720,13 @@ module aptos_arcade::game_admin {
                 player_address
             ) == object::address_from_constructor_ref(&token_constructor_ref), 0
         );
+        assert!(has_player_received_token<TestGame>(collection_name, player_address), 0)
     }
 
     #[test(aptos_arcade=@aptos_arcade, player=@0x100)]
-    #[expected_failure(abort_code=EPLAYER_ALREADY_RECEIVED_ONE_TO_ONE_TOKEN)]
+    #[expected_failure(abort_code=EALREADY_MINTED_ONE_TO_ONE_TOKEN)]
     fun test_mint_token_one_to_one_collection_twice(aptos_arcade: &signer, player: &signer)
-    acquires GameAdmin, OneToOneCollection {
+    acquires GameAdmin, Collection {
         initialize<TestGame>(aptos_arcade, TestGame {});
         let admin_cap = create_game_admin_capability<TestGame>(aptos_arcade, TestGame {});
 
@@ -702,12 +734,15 @@ module aptos_arcade::game_admin {
         let collection_description = string::utf8(b"test_description");
         let collection_uri = string::utf8(b"test_uri");
         let collection_royalty = option::none<Royalty>();
-        create_one_to_one_collection(
+        create_collection(
             &admin_cap,
             collection_description,
             collection_name,
             collection_royalty,
-            collection_uri
+            collection_uri,
+            true,
+            true,
+            true
         );
 
         let player_cap = create_player_capability<TestGame>(player, TestGame {});
@@ -722,7 +757,6 @@ module aptos_arcade::game_admin {
             token_name,
             token_royalty,
             token_uri,
-            true
         );
         mint_token_player(
             &player_cap,
@@ -731,7 +765,43 @@ module aptos_arcade::game_admin {
             token_name,
             token_royalty,
             token_uri,
+        );
+    }
+
+    #[test(aptos_arcade=@aptos_arcade, player=@0x100)]
+    #[expected_failure(abort_code=ECOLLECTION_DOES_NOT_ALLOW_PLAYER_MINT)]
+    fun test_mint_token_no_player_mint(aptos_arcade: &signer, player: &signer)
+    acquires GameAdmin, Collection {
+        initialize<TestGame>(aptos_arcade, TestGame {});
+        let admin_cap = create_game_admin_capability<TestGame>(aptos_arcade, TestGame {});
+
+        let collection_name = string::utf8(b"test_collection");
+        let collection_description = string::utf8(b"test_description");
+        let collection_uri = string::utf8(b"test_uri");
+        let collection_royalty = option::none<Royalty>();
+        create_collection(
+            &admin_cap,
+            collection_description,
+            collection_name,
+            collection_royalty,
+            collection_uri,
+            true,
+            false,
             true
+        );
+
+        let player_cap = create_player_capability<TestGame>(player, TestGame {});
+        let token_name = string::utf8(b"test_token");
+        let token_description = string::utf8(b"test_description");
+        let token_uri = string::utf8(b"test_uri");
+        let token_royalty = option::none<Royalty>();
+        mint_token_player(
+            &player_cap,
+            collection_name,
+            token_description,
+            token_name,
+            token_royalty,
+            token_uri,
         );
     }
 }

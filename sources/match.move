@@ -12,7 +12,7 @@ module aptos_arcade::match {
     use aptos_token_objects::collection;
 
     use aptos_arcade::elo;
-    use aptos_arcade::game_admin::{Self, GameAdminCapability};
+    use aptos_arcade::game_admin::{Self, GameAdminCapability, get_game_account_address};
 
     // error codes
 
@@ -58,7 +58,10 @@ module aptos_arcade::match {
             get_collection_description<GameType>(),
             get_collection_name<GameType>(),
             option::none(),
-            get_collection_uri<GameType>()
+            get_collection_uri<GameType>(),
+            true,
+            false,
+            false,
         );
     }
 
@@ -82,6 +85,7 @@ module aptos_arcade::match {
             get_match_name<GameType>(),
             option::none(),
             string::utf8(COLLECTION_URI),
+            get_game_account_address<GameType>()
         );
 
         // add ELO rating resource
