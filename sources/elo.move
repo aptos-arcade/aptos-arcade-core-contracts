@@ -42,6 +42,8 @@ module aptos_arcade::elo {
         losses: u64
     }
 
+    struct EloStat has drop {}
+
     // public functions
 
     /// initializes an ELO collection for a game
@@ -98,10 +100,7 @@ module aptos_arcade::elo {
     /// updates the ELO ratings for a team given the outcome of a match
     /// `team` - a vector of player addresses
     /// `win` - true if the team won, false if the team lost
-    fun update_team_elo_ratings<GameType>(
-        team: vector<address>,
-        win: bool
-    ) acquires EloRating {
+    fun update_team_elo_ratings<GameType>(team: vector<address>, win: bool) acquires EloRating {
         vector::for_each(team, |player_address| update_player_elo_rating<GameType>(player_address, win));
     }
 
