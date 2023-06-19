@@ -1,10 +1,10 @@
 module aptos_arcade::game_admin {
 
     use std::signer;
-    use std::vector;
-    use std::string::String;
+    use std::string::{Self, String};
     use std::option::{Self, Option};
 
+    use aptos_std::string_utils;
     use aptos_std::type_info;
     use aptos_std::smart_table::{Self, SmartTable};
 
@@ -41,7 +41,7 @@ module aptos_arcade::game_admin {
 
     // constants
 
-    const ACCOUNT_SEED_TEMPLATE: vector<u8> = b" Account";
+    const ACCOUNT_SEED_TEMPLATE: vector<u8> = b"{} Account";
 
     // structs
 
@@ -51,20 +51,24 @@ module aptos_arcade::game_admin {
     }
 
     /// holds information about a collection
-    struct Collection<phantom GameType> has key {
+    struct Collection has key {
+        /// whether the tokens can be transferred after mint
         soulbound: bool,
-        can_player_mint: bool,
+        /// whether an account that is not the game admin can mint
+        mintable: bool,
+        /// mapping from minter address to minted object address
+        /// option::none for collections that are not one-to-one
         one_to_one_mapping: Option<SmartTable<address, address>>
     }
 
     // access control structs
 
     /// used to access game admin functions
-    struct GameAdminCapability<phantom GameType> has drop {}
+    struct GameAdminCapability<phantom GameType> has drop, store {}
 
-    /// used to access player functions
-    struct PlayerCapability<phantom GameType> has drop {
-        player_address: address
+    /// used to access external mint functions
+    struct MinterCapability<phantom GameType> has drop, store {
+        minter_address: address
     }
 
     // initialization
@@ -72,7 +76,7 @@ module aptos_arcade::game_admin {
     /// initializes the game admin for the given `GameType`
     /// `game_admin` - must be the deployer of the `GameType` struct
     /// `witness` - ensures that the `GameType` struct is the same as the one that was deployed
-    public fun initialize<GameType: drop>(game_admin: &signer, _witness: GameType): GameAdminCapability<GameType> {
+    public fun initialize<GameType: drop>(game_admin: &signer, _witness: &GameType): GameAdminCapability<GameType> {
         assert_game_admin_not_initialized<GameType>();
         assert_signer_is_game_admin<GameType>(game_admin);
         let (_, signer_cap) = account::create_resource_account(game_admin, get_game_account_seed<GameType>());
@@ -116,14 +120,16 @@ module aptos_arcade::game_admin {
         } else {
             option::none()
         };
-        move_to(&object::generate_signer(&constructor_ref), Collection<GameType> {
+        move_to(&object::generate_signer(&constructor_ref), Collection {
             soulbound,
-            can_player_mint,
+            mintable: can_player_mint,
             one_to_one_mapping
         });
 
         constructor_ref
     }
+
+    // token creation
 
     /// mints a token for `collection_name` for the given `GameType` under the game admin resource account
     /// `game_admin_cap` - must be a game admin capability for the given `GameType`
@@ -152,35 +158,34 @@ module aptos_arcade::game_admin {
         )
     }
 
-    /// mints a token for `collection_name` for the given `GameType` under the player resource account
-    /// `player_cap` - must be a player capability for the given `GameType`
+    /// mints a token for `collection_name` for the given `GameType` to the minter; collection must be mintable
+    /// `minter_cap` - MinterCapability for GameType
     /// `collection_name` - name of the collection
     /// `token_description` - description of the token
     /// `token_name` - name of the token
     /// `royalty` - royalty of the token
     /// `uri` - uri of the token
     /// `soulbound` - whether the token is soulbound
-    public fun mint_token_player<GameType>(
-        player_cap: &PlayerCapability<GameType>,
+    public fun mint_token_external<GameType>(
+        minter_cap: &MinterCapability<GameType>,
         collection_name: String,
         token_description: String,
         token_name: String,
         royalty: Option<Royalty>,
         uri: String,
     ): ConstructorRef acquires GameAdmin, Collection {
-        assert_player_can_mint<GameType>(collection_name);
+        assert_mintable<GameType>(collection_name);
         mint_token<GameType>(
             collection_name,
             token_description,
             token_name,
             royalty,
             uri,
-            player_cap.player_address
+            minter_cap.minter_address
         )
     }
 
     /// mints a token for `collection_name` for the given `GameType` under the game admin resource account
-    /// `game_admin_cap` - must be a game admin capability for the given `GameType`
     /// `collection_name` - name of the collection
     /// `token_description` - description of the token
     /// `token_name` - name of the token
@@ -197,7 +202,7 @@ module aptos_arcade::game_admin {
     ): ConstructorRef acquires GameAdmin, Collection {
         assert_collection_initialized<GameType>(collection_name);
 
-        let collection = borrow_global_mut<Collection<GameType>>(
+        let collection = borrow_global_mut<Collection>(
             get_collection_address<GameType>(collection_name)
         );
 
@@ -238,7 +243,7 @@ module aptos_arcade::game_admin {
     /// creates a game admin capability for the given `GameType`
     /// `game_admin` - must be the deployer of the `GameType` struct
     /// `witness` - ensures that the `GameType` struct is the same as the one that was deployed
-    public fun create_game_admin_capability<GameType: drop>(game_admin: &signer, _witness: GameType): GameAdminCapability<GameType> {
+    public fun create_game_admin_capability<GameType: drop>(game_admin: &signer, _witness: &GameType): GameAdminCapability<GameType> {
         assert_game_admin_initialized<GameType>();
         assert_signer_is_game_admin<GameType>(game_admin);
         GameAdminCapability<GameType> {}
@@ -247,17 +252,17 @@ module aptos_arcade::game_admin {
     /// creates a player capability for the given `GameType`
     /// `player` - must be the player of the `GameType` struct
     /// `witness` - ensures that the `GameType` struct is the same as the one that was deployed
-    public fun create_player_capability<GameType: drop>(player: &signer, _witness: GameType): PlayerCapability<GameType> {
+    public fun create_minter_capability<GameType: drop>(minter: &signer, _witness: &GameType): MinterCapability<GameType> {
         assert_game_admin_initialized<GameType>();
-        PlayerCapability<GameType> {
-            player_address: signer::address_of(player)
+        MinterCapability<GameType> {
+            minter_address: signer::address_of(minter)
         }
     }
 
     /// gets the address of the player who created the given `PlayerCapability`
-    /// `player_cap` - the PlayerCapability
-    public fun get_player_address<GameType>(player_cap: &PlayerCapability<GameType>): address {
-        player_cap.player_address
+    /// `minter_cap` - the MinterCapability
+    public fun get_minter_address<GameType>(minter_cap: &MinterCapability<GameType>): address {
+        minter_cap.minter_address
     }
 
     // signer helpers
@@ -281,6 +286,13 @@ module aptos_arcade::game_admin {
     }
 
     #[view]
+    /// returns whether or not a collection with the given `collection_name` exists for the given `GameType`
+    /// `collection_name` - name of the collection
+    public fun does_collection_exist<GameType>(collection_name: String): bool {
+        exists<Collection>(get_collection_address<GameType>(collection_name))
+    }
+
+    #[view]
     /// returns the address of the collection for the given `GameType` and `collection_name`
     /// `collection_name` - name of the collection
     public fun get_collection_address<GameType>(collection_name: String): address {
@@ -291,18 +303,11 @@ module aptos_arcade::game_admin {
     }
 
     #[view]
-    /// returns whether or not a collection with the given `collection_name` exists for the given `GameType`
-    /// `collection_name` - name of the collection
-    public fun does_collection_exist<GameType>(collection_name: String): bool {
-        exists<Collection<GameType>>(get_collection_address<GameType>(collection_name))
-    }
-
-    #[view]
     /// returns whether a collection is one-to-one
     /// `collection_name` - name of the collection
     public fun is_collection_one_to_one<GameType>(collection_name: String): bool acquires Collection {
         let collection_address = get_collection_address<GameType>(collection_name);
-        let collection = borrow_global<Collection<GameType>>(collection_address);
+        let collection = borrow_global<Collection>(collection_address);
         option::is_some(&collection.one_to_one_mapping)
     }
 
@@ -313,7 +318,7 @@ module aptos_arcade::game_admin {
     public fun has_player_received_token<GameType>(collection_name: String, player_address: address): bool
     acquires Collection {
         let collection_address = get_collection_address<GameType>(collection_name);
-        let collection = borrow_global<Collection<GameType>>(collection_address);
+        let collection = borrow_global<Collection>(collection_address);
         smart_table::contains(option::borrow(&collection.one_to_one_mapping), player_address)
     }
 
@@ -324,7 +329,7 @@ module aptos_arcade::game_admin {
     public fun get_player_token_address<GameType>(collection_name: String, player_address: address): address
     acquires Collection {
         let collection_address = get_collection_address<GameType>(collection_name);
-        let collection = borrow_global<Collection<GameType>>(collection_address);
+        let collection = borrow_global<Collection>(collection_address);
         *smart_table::borrow(option::borrow(&collection.one_to_one_mapping), player_address)
     }
 
@@ -337,9 +342,10 @@ module aptos_arcade::game_admin {
 
     /// returns the seed for the game account for the given `GameType`
     fun get_game_account_seed<GameType>(): vector<u8> {
-        let account_seed = type_info::struct_name(&type_info::type_of<GameType>());
-        vector::append(&mut account_seed, ACCOUNT_SEED_TEMPLATE);
-        account_seed
+        *string::bytes(&string_utils::format1(
+            &ACCOUNT_SEED_TEMPLATE,
+            type_info::struct_name(&type_info::type_of<GameType>())
+        ))
     }
 
     // assert statements
@@ -347,7 +353,7 @@ module aptos_arcade::game_admin {
     /// asserts that the given `signer` is the game admin for the given `GameType`
     /// `game_admin` - must be the deployer of the `GameType` struct
     fun assert_signer_is_game_admin<GameType>(game_admin: &signer) {
-        assert!(signer::address_of(game_admin) == type_info::account_address(&type_info::type_of<GameType>()), ESIGNER_NOT_ADMIN);
+        assert!(signer::address_of(game_admin) == get_account_address<GameType>(), ESIGNER_NOT_ADMIN);
     }
 
     /// asserts that the game admin resource account has not been initialized
@@ -372,24 +378,21 @@ module aptos_arcade::game_admin {
         assert!(does_collection_exist<GameType>(collection_name), ECOLLECTION_NOT_INITIALIZED)
     }
 
+    /// asserts that a player can mint a token
+    /// `collection_name` - name of the collection
+    fun assert_mintable<GameType>(collection_name: String) acquires Collection {
+        let collection_address = get_collection_address<GameType>(collection_name);
+        let collection = borrow_global<Collection>(collection_address);
+        assert!(collection.mintable, ECOLLECTION_DOES_NOT_ALLOW_PLAYER_MINT);
+    }
+
     /// asserts that an address can mint a one-to-one token
     fun assert_can_mint_one_to_one<GameType>(one_to_one_mapping: &SmartTable<address, address>, to_address: address) {
         assert!(!smart_table::contains(one_to_one_mapping, to_address), EALREADY_MINTED_ONE_TO_ONE_TOKEN);
     }
 
-    /// asserts that a player can mint a token
-    /// `collection_name` - name of the collection
-    fun assert_player_can_mint<GameType>(collection_name: String) acquires Collection {
-        let collection_address = get_collection_address<GameType>(collection_name);
-        let collection = borrow_global<Collection<GameType>>(collection_address);
-        assert!(collection.can_player_mint, ECOLLECTION_DOES_NOT_ALLOW_PLAYER_MINT);
-
-    }
-
     // tests
 
-    #[test_only]
-    use std::string;
     #[test_only]
     use aptos_token_objects::token::Token;
 
@@ -399,59 +402,59 @@ module aptos_arcade::game_admin {
     #[test(aptos_arcade=@aptos_arcade)]
     fun test_initialize(aptos_arcade: &signer) {
         assert_game_admin_not_initialized<TestGame>();
-        initialize<TestGame>(aptos_arcade, TestGame {});
+        initialize<TestGame>(aptos_arcade, &TestGame {});
         assert_game_admin_initialized<TestGame>();
     }
 
     #[test(not_aptos_arcade=@0x100)]
     #[expected_failure(abort_code=ESIGNER_NOT_ADMIN)]
     fun test_initialize_unauthorized(not_aptos_arcade: &signer) {
-        initialize<TestGame>(not_aptos_arcade, TestGame {});
+        initialize<TestGame>(not_aptos_arcade, &TestGame {});
     }
 
     #[test(aptos_arcade=@aptos_arcade)]
     #[expected_failure(abort_code=EGAME_ACCOUNT_ALREADY_INITIALIZED)]
     fun test_initialize_twice(aptos_arcade: &signer) {
-        initialize<TestGame>(aptos_arcade, TestGame {});
-        initialize<TestGame>(aptos_arcade, TestGame {});
+        initialize<TestGame>(aptos_arcade, &TestGame {});
+        initialize<TestGame>(aptos_arcade, &TestGame {});
     }
 
     #[test(aptos_arcade=@aptos_arcade)]
     fun test_create_game_admin_cap(aptos_arcade: &signer) {
-        initialize<TestGame>(aptos_arcade, TestGame {});
-        create_game_admin_capability<TestGame>(aptos_arcade, TestGame {});
+        initialize<TestGame>(aptos_arcade, &TestGame {});
+        create_game_admin_capability<TestGame>(aptos_arcade, &TestGame {});
     }
 
     #[test(aptos_arcade=@aptos_arcade, not_aptos_arcade=@0x100)]
     #[expected_failure(abort_code=ESIGNER_NOT_ADMIN)]
     fun test_create_game_admin_cap_unauthorized(aptos_arcade: &signer, not_aptos_arcade: &signer) {
-        initialize<TestGame>(aptos_arcade, TestGame {});
-        create_game_admin_capability<TestGame>(not_aptos_arcade, TestGame {});
+        initialize<TestGame>(aptos_arcade, &TestGame {});
+        create_game_admin_capability<TestGame>(not_aptos_arcade, &TestGame {});
     }
 
     #[test(aptos_arcade=@aptos_arcade)]
     #[expected_failure(abort_code=EGAME_ACCOUNT_NOT_INITIALIZED)]
     fun test_create_game_admin_cap_uninitialized(aptos_arcade: &signer) {
-        create_game_admin_capability<TestGame>(aptos_arcade, TestGame {});
+        create_game_admin_capability<TestGame>(aptos_arcade, &TestGame {});
     }
 
     #[test(aptos_arcade=@aptos_arcade, player=@0x100)]
-    fun test_create_player_cap(aptos_arcade: &signer, player: &signer) {
-        initialize<TestGame>(aptos_arcade, TestGame {});
-        let player_cap = create_player_capability<TestGame>(player, TestGame {});
-        assert!(signer::address_of(player) == get_player_address(&player_cap), 0);
+    fun test_create_minter_cap(aptos_arcade: &signer, player: &signer) {
+        initialize<TestGame>(aptos_arcade, &TestGame {});
+        let minter_cap = create_minter_capability<TestGame>(player, &TestGame {});
+        assert!(signer::address_of(player) == get_minter_address(&minter_cap), 0);
     }
 
     #[test(player=@0x100)]
     #[expected_failure(abort_code=EGAME_ACCOUNT_NOT_INITIALIZED)]
-    fun test_create_player_cap_uninitialized(player: &signer) {
-        create_player_capability<TestGame>(player, TestGame {});
+    fun test_create_minter_cap_uninitialized(player: &signer) {
+        create_minter_capability<TestGame>(player, &TestGame {});
     }
 
     #[test(aptos_arcade=@aptos_arcade)]
     fun test_create_collection(aptos_arcade: &signer) acquires GameAdmin {
-        initialize<TestGame>(aptos_arcade, TestGame {});
-        let admin_cap = create_game_admin_capability<TestGame>(aptos_arcade, TestGame {});
+        initialize<TestGame>(aptos_arcade, &TestGame {});
+        let admin_cap = create_game_admin_capability<TestGame>(aptos_arcade, &TestGame {});
         let collection_name = string::utf8(b"test_collection");
         let collection_description = string::utf8(b"test_description");
         let collection_uri = string::utf8(b"test_uri");
@@ -467,7 +470,7 @@ module aptos_arcade::game_admin {
             false
         );
         assert_collection_initialized<TestGame>(collection_name);
-        let collection_object = object::object_from_constructor_ref<Collection<TestGame>>(&constructor_ref);
+        let collection_object = object::object_from_constructor_ref<Collection>(&constructor_ref);
         assert!(collection::creator(collection_object) == get_game_account_address<TestGame>(), 0);
         assert!(collection::name(collection_object) == collection_name, 0);
         assert!(collection::description(collection_object) == collection_description, 0);
@@ -477,8 +480,8 @@ module aptos_arcade::game_admin {
     #[test(aptos_arcade=@aptos_arcade)]
     #[expected_failure(abort_code=ECOLLECTION_ALREADY_INITIALIZED)]
     fun test_create_collection_twice(aptos_arcade: &signer) acquires GameAdmin {
-        initialize<TestGame>(aptos_arcade, TestGame {});
-        let admin_cap = create_game_admin_capability<TestGame>(aptos_arcade, TestGame {});
+        initialize<TestGame>(aptos_arcade, &TestGame {});
+        let admin_cap = create_game_admin_capability<TestGame>(aptos_arcade, &TestGame {});
         let collection_name = string::utf8(b"test_collection");
         let collection_description = string::utf8(b"test_description");
         let collection_uri = string::utf8(b"test_uri");
@@ -507,8 +510,8 @@ module aptos_arcade::game_admin {
 
     #[test(aptos_arcade=@aptos_arcade)]
     fun test_create_one_to_one_collection(aptos_arcade: &signer) acquires GameAdmin, Collection {
-        initialize<TestGame>(aptos_arcade, TestGame {});
-        let admin_cap = create_game_admin_capability<TestGame>(aptos_arcade, TestGame {});
+        initialize<TestGame>(aptos_arcade, &TestGame {});
+        let admin_cap = create_game_admin_capability<TestGame>(aptos_arcade, &TestGame {});
         let collection_name = string::utf8(b"test_collection");
         let collection_description = string::utf8(b"test_description");
         let collection_uri = string::utf8(b"test_uri");
@@ -528,8 +531,8 @@ module aptos_arcade::game_admin {
 
     #[test(aptos_arcade=@aptos_arcade)]
     fun test_mint_token_admin(aptos_arcade: &signer) acquires GameAdmin, Collection {
-        initialize<TestGame>(aptos_arcade, TestGame {});
-        let admin_cap = create_game_admin_capability<TestGame>(aptos_arcade, TestGame {});
+        initialize<TestGame>(aptos_arcade, &TestGame {});
+        let admin_cap = create_game_admin_capability<TestGame>(aptos_arcade, &TestGame {});
 
         let collection_name = string::utf8(b"test_collection");
         let collection_description = string::utf8(b"test_description");
@@ -570,8 +573,8 @@ module aptos_arcade::game_admin {
     #[test(aptos_arcade=@aptos_arcade)]
     #[expected_failure(abort_code=ECOLLECTION_NOT_INITIALIZED)]
     fun test_mint_token_admin_collection_does_not_exist(aptos_arcade: &signer) acquires GameAdmin, Collection {
-        initialize<TestGame>(aptos_arcade, TestGame {});
-        let admin_cap = create_game_admin_capability<TestGame>(aptos_arcade, TestGame {});
+        initialize<TestGame>(aptos_arcade, &TestGame {});
+        let admin_cap = create_game_admin_capability<TestGame>(aptos_arcade, &TestGame {});
 
         let collection_name = string::utf8(b"test_collection");
         let token_name = string::utf8(b"test_token");
@@ -592,8 +595,8 @@ module aptos_arcade::game_admin {
     #[test(aptos_arcade=@aptos_arcade, player=@0x100)]
     fun test_mint_token_transferrable_player(aptos_arcade: &signer, player: &signer)
     acquires GameAdmin, Collection {
-        initialize<TestGame>(aptos_arcade, TestGame {});
-        let admin_cap = create_game_admin_capability<TestGame>(aptos_arcade, TestGame {});
+        initialize<TestGame>(aptos_arcade, &TestGame {});
+        let admin_cap = create_game_admin_capability<TestGame>(aptos_arcade, &TestGame {});
 
         let collection_name = string::utf8(b"test_collection");
         let collection_description = string::utf8(b"test_description");
@@ -610,13 +613,13 @@ module aptos_arcade::game_admin {
             false
         );
 
-        let player_cap = create_player_capability<TestGame>(player, TestGame {});
+        let minter_cap = create_minter_capability<TestGame>(player, &TestGame {});
         let token_name = string::utf8(b"test_token");
         let token_description = string::utf8(b"test_description");
         let token_uri = string::utf8(b"test_uri");
         let token_royalty = option::none<Royalty>();
-        let token_constructor_ref = mint_token_player(
-            &player_cap,
+        let token_constructor_ref = mint_token_external(
+            &minter_cap,
             collection_name,
             token_description,
             token_name,
@@ -636,8 +639,8 @@ module aptos_arcade::game_admin {
     #[test(aptos_arcade=@aptos_arcade, player=@0x100)]
     fun test_mint_token_nontransferrable_player(aptos_arcade: &signer, player: &signer)
     acquires GameAdmin, Collection {
-        initialize<TestGame>(aptos_arcade, TestGame {});
-        let admin_cap = create_game_admin_capability<TestGame>(aptos_arcade, TestGame {});
+        initialize<TestGame>(aptos_arcade, &TestGame {});
+        let admin_cap = create_game_admin_capability<TestGame>(aptos_arcade, &TestGame {});
 
         let collection_name = string::utf8(b"test_collection");
         let collection_description = string::utf8(b"test_description");
@@ -654,13 +657,13 @@ module aptos_arcade::game_admin {
             false
         );
 
-        let player_cap = create_player_capability<TestGame>(player, TestGame {});
+        let minter_cap = create_minter_capability<TestGame>(player, &TestGame {});
         let token_name = string::utf8(b"test_token");
         let token_description = string::utf8(b"test_description");
         let token_uri = string::utf8(b"test_uri");
         let token_royalty = option::none<Royalty>();
-        let token_constructor_ref = mint_token_player(
-            &player_cap,
+        let token_constructor_ref = mint_token_external(
+            &minter_cap,
             collection_name,
             token_description,
             token_name,
@@ -679,8 +682,8 @@ module aptos_arcade::game_admin {
     #[test(aptos_arcade=@aptos_arcade, player=@0x100)]
     fun test_mint_token_one_to_one_collection(aptos_arcade: &signer, player: &signer)
     acquires GameAdmin, Collection {
-        initialize<TestGame>(aptos_arcade, TestGame {});
-        let admin_cap = create_game_admin_capability<TestGame>(aptos_arcade, TestGame {});
+        initialize<TestGame>(aptos_arcade, &TestGame {});
+        let admin_cap = create_game_admin_capability<TestGame>(aptos_arcade, &TestGame {});
 
         let collection_name = string::utf8(b"test_collection");
         let collection_description = string::utf8(b"test_description");
@@ -697,13 +700,13 @@ module aptos_arcade::game_admin {
             true
         );
 
-        let player_cap = create_player_capability<TestGame>(player, TestGame {});
+        let minter_cap = create_minter_capability<TestGame>(player, &TestGame {});
         let token_name = string::utf8(b"test_token");
         let token_description = string::utf8(b"test_description");
         let token_uri = string::utf8(b"test_uri");
         let token_royalty = option::none<Royalty>();
-        let token_constructor_ref = mint_token_player(
-            &player_cap,
+        let token_constructor_ref = mint_token_external(
+            &minter_cap,
             collection_name,
             token_description,
             token_name,
@@ -727,8 +730,8 @@ module aptos_arcade::game_admin {
     #[expected_failure(abort_code=EALREADY_MINTED_ONE_TO_ONE_TOKEN)]
     fun test_mint_token_one_to_one_collection_twice(aptos_arcade: &signer, player: &signer)
     acquires GameAdmin, Collection {
-        initialize<TestGame>(aptos_arcade, TestGame {});
-        let admin_cap = create_game_admin_capability<TestGame>(aptos_arcade, TestGame {});
+        initialize<TestGame>(aptos_arcade, &TestGame {});
+        let admin_cap = create_game_admin_capability<TestGame>(aptos_arcade, &TestGame {});
 
         let collection_name = string::utf8(b"test_collection");
         let collection_description = string::utf8(b"test_description");
@@ -745,21 +748,21 @@ module aptos_arcade::game_admin {
             true
         );
 
-        let player_cap = create_player_capability<TestGame>(player, TestGame {});
+        let minter_cap = create_minter_capability<TestGame>(player, &TestGame {});
         let token_name = string::utf8(b"test_token");
         let token_description = string::utf8(b"test_description");
         let token_uri = string::utf8(b"test_uri");
         let token_royalty = option::none<Royalty>();
-        mint_token_player(
-            &player_cap,
+        mint_token_external(
+            &minter_cap,
             collection_name,
             token_description,
             token_name,
             token_royalty,
             token_uri,
         );
-        mint_token_player(
-            &player_cap,
+        mint_token_external(
+            &minter_cap,
             collection_name,
             token_description,
             token_name,
@@ -772,8 +775,8 @@ module aptos_arcade::game_admin {
     #[expected_failure(abort_code=ECOLLECTION_DOES_NOT_ALLOW_PLAYER_MINT)]
     fun test_mint_token_no_player_mint(aptos_arcade: &signer, player: &signer)
     acquires GameAdmin, Collection {
-        initialize<TestGame>(aptos_arcade, TestGame {});
-        let admin_cap = create_game_admin_capability<TestGame>(aptos_arcade, TestGame {});
+        initialize<TestGame>(aptos_arcade, &TestGame {});
+        let admin_cap = create_game_admin_capability<TestGame>(aptos_arcade, &TestGame {});
 
         let collection_name = string::utf8(b"test_collection");
         let collection_description = string::utf8(b"test_description");
@@ -790,13 +793,13 @@ module aptos_arcade::game_admin {
             true
         );
 
-        let player_cap = create_player_capability<TestGame>(player, TestGame {});
+        let minter_cap = create_minter_capability<TestGame>(player, &TestGame {});
         let token_name = string::utf8(b"test_token");
         let token_description = string::utf8(b"test_description");
         let token_uri = string::utf8(b"test_uri");
         let token_royalty = option::none<Royalty>();
-        mint_token_player(
-            &player_cap,
+        mint_token_external(
+            &minter_cap,
             collection_name,
             token_description,
             token_name,

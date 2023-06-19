@@ -1,26 +1,53 @@
 module aptos_arcade::scripts {
 
-    use aptos_framework::object::Object;
+    use aptos_framework::object::{Object, ConstructorRef};
 
     use aptos_arcade::game_admin::{Self, GameAdminCapability};
+    use aptos_arcade::profile::{Self, ProfileCapability};
+    use aptos_arcade::stats;
+    use aptos_arcade::achievement;
     use aptos_arcade::elo;
     use aptos_arcade::match::{Self, Match};
+
+    // game admin functions
 
     /// initializes the Aptos Arcade modules for a specific game
     /// `game_admin` - must be the deployer of the GameType struct
     /// `witness` - an instance of the GameType struct
     public fun initialize<GameType: drop>(game_admin: &signer, witness: GameType): GameAdminCapability<GameType> {
-        let game_admin_cap = game_admin::initialize(game_admin, witness);
+        let game_admin_cap = game_admin::initialize(game_admin, &witness);
+        profile::create_profile_collection(&game_admin_cap);
         elo::initialize_elo_collection(&game_admin_cap);
         match::initialize_matches_collection(&game_admin_cap);
         game_admin_cap
     }
 
-    /// mints an ELO token for a player
-    /// `player` - each player can mint only one ELO token per game
-    /// `witness` - ann instance of the GameType struct
-    public fun mint_elo_token<GameType: drop>(player: &signer, witness: GameType) {
-        elo::mint_elo_token(&game_admin::create_player_capability(player, witness));
+    public fun create_stat<GameType: drop, StatType: drop>(
+        game_admin: &signer,
+        default_value: u64,
+        game_witness: GameType,
+        stat_witness: StatType
+    ) {
+        stats::create_stat(
+            &game_admin::create_game_admin_capability(game_admin, &game_witness),
+            default_value,
+            stat_witness
+        );
+    }
+
+    public fun update_stat_value<GameType: drop, StatType: drop>(
+        game_admin: &signer,
+        player_address: address,
+        value: u64,
+        game_witness: GameType,
+        stat_witness: StatType
+    ) {
+        stats::update_stat(
+            &game_admin::create_game_admin_capability(game_admin, &game_witness),
+            player_address,
+            value,
+            stat_witness
+        );
     }
 
     /// creates a match between a set of teams
@@ -29,13 +56,10 @@ module aptos_arcade::scripts {
     /// `teams` - a vector of teams, each team is a vector of player addresses
     public fun create_match<GameType: drop>(
         game_admin: &signer,
+        teams: vector<vector<address>>,
         witness: GameType,
-        teams: vector<vector<address>>
     ): Object<Match<GameType>> {
-        match::create_match(
-            &game_admin::create_game_admin_capability(game_admin, witness),
-            teams,
-        )
+        match::create_match(&game_admin::create_game_admin_capability(game_admin, &witness), teams)
     }
 
     /// sets the result of a match
@@ -45,15 +69,56 @@ module aptos_arcade::scripts {
     /// `winner_index` - the index of the winning team
     public fun set_match_result<GameType: drop>(
         game_admin: &signer,
-        witness: GameType,
         match: Object<Match<GameType>>,
-        winner_index: u64
+        winner_index: u64,
+        witness: GameType,
     ) {
         match::set_match_result(
-            &game_admin::create_game_admin_capability(game_admin, witness),
+            &game_admin::create_game_admin_capability(game_admin, &witness),
             match,
             winner_index
         );
+    }
+
+    public fun create_achievement<GameType: drop, StatType: drop, AchievementType: drop>(
+        game_admin: &signer,
+        threshold: u64,
+        game_witness: GameType,
+        achievement_witness: AchievementType
+    ): ConstructorRef {
+        achievement::create_achievement<GameType, StatType, AchievementType>(
+            &game_admin::create_game_admin_capability(game_admin, &game_witness),
+            threshold,
+            achievement_witness
+        )
+    }
+
+    // player functions
+
+    public fun initialize_player<GameType: drop>(player: &signer, witness: GameType): ProfileCapability<GameType> {
+        profile::mint_profile_token(&game_admin::create_minter_capability(player, &witness));
+        let profile_cap = profile::create_profile_cap(player, &witness);
+        elo::mint_elo_token(&profile_cap);
+        profile_cap
+    }
+
+    public fun register_stat<GameType: drop, StatType: drop>(
+        player: &signer,
+        game_witness: GameType,
+        stat_witness: StatType
+    ) {
+        stats::mint_stat(&profile::create_profile_cap(player, &game_witness), stat_witness);
+    }
+
+    public fun claim_achievement<GameType: drop, StatType: drop, AchievementType: drop>(
+        player: &signer,
+        game_witness: GameType,
+        achievement_witness: AchievementType
+    ): ConstructorRef {
+        achievement::collect_achievement<GameType, StatType, AchievementType>(
+            &profile::create_profile_cap(player, &game_witness),
+            achievement_witness
+        )
     }
 
     // tests
@@ -63,25 +128,47 @@ module aptos_arcade::scripts {
 
     #[test_only]
     struct TestGame has drop {}
+    #[test_only]
+    struct TestStat has drop {}
+    #[test_only]
+    struct TestAchievement has drop {}
 
     #[test(aptos_arcade=@aptos_arcade, player1=@0x100, player2=@0x101)]
     fun test_e2e(aptos_arcade: &signer, player1: &signer, player2: &signer) {
-        aptos_arcade::scripts::initialize(aptos_arcade, TestGame {});
-        aptos_arcade::scripts::mint_elo_token(player1, TestGame {});
-        aptos_arcade::scripts::mint_elo_token(player2, TestGame {});
-        let match_object = aptos_arcade::scripts::create_match(
+        initialize(aptos_arcade, TestGame {});
+
+        let player1_address = signer::address_of(player1);
+        let player2_address = signer::address_of(player2);
+
+        initialize_player(player1, TestGame {});
+        initialize_player(player2, TestGame {});
+
+        let threshold = 100;
+        let default_value = threshold - 10;
+
+        create_stat(aptos_arcade, default_value, TestGame {}, TestStat {});
+
+        create_achievement<TestGame, TestStat, TestAchievement>(aptos_arcade, threshold, TestGame {}, TestAchievement {});
+
+        register_stat(player1, TestGame {}, TestStat {});
+        update_stat_value(aptos_arcade, player1_address, threshold, TestGame {}, TestStat {});
+        claim_achievement<TestGame, TestStat, TestAchievement>(player1, TestGame {}, TestAchievement {});
+
+        let match_object = create_match(
             aptos_arcade,
-            TestGame {},
             vector<vector<address>>[
-                vector<address>[signer::address_of(player1)],
-                vector<address>[signer::address_of(player2)]
-            ]
+                vector<address>[player1_address],
+                vector<address>[player2_address]
+            ],
+            TestGame {}
         );
-        aptos_arcade::scripts::set_match_result(
+        set_match_result(
             aptos_arcade,
-            TestGame {},
             match_object,
-            0
+            0,
+            TestGame {}
         );
+
+
     }
 }

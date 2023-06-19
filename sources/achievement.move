@@ -6,11 +6,11 @@ module aptos_arcade::achievement {
     use aptos_std::string_utils;
     use aptos_std::type_info;
 
-    use aptos_framework::object;
+    use aptos_framework::object::{Self, ConstructorRef};
 
-    use aptos_arcade::game_admin::{Self, GameAdminCapability, PlayerCapability};
+    use aptos_arcade::game_admin::{Self, GameAdminCapability};
+    use aptos_arcade::profile::{Self, ProfileCapability};
     use aptos_arcade::stats;
-    use aptos_framework::object::ConstructorRef;
 
     // error codes
 
@@ -43,7 +43,7 @@ module aptos_arcade::achievement {
     public fun create_achievement<GameType: drop, StatType: drop, AchievementType: drop>(
         game_admin_cap: &GameAdminCapability<GameType>,
         threshold: u64,
-        _witness: AchievementType,
+        _witness: AchievementType
     ): ConstructorRef {
         assert_stat_exists<GameType, StatType>();
         let constructor_ref = game_admin::create_collection(
@@ -67,13 +67,13 @@ module aptos_arcade::achievement {
     /// `default_value` - the default value of the stat
     /// `witness` - a witness of the StatType
     public fun collect_achievement<GameType: drop, StatType: drop, AchievementType: drop>(
-        player_cap: &PlayerCapability<GameType>,
-        _witness: AchievementType,
+        profile_cap: &ProfileCapability<GameType>,
+        _witness: AchievementType
     ): ConstructorRef acquires Achievement {
-        let player_address = game_admin::get_player_address(player_cap);
+        let player_address = profile::get_player_address(profile_cap);
         assert_player_meets_threshold<GameType, StatType, AchievementType>(player_address);
-        game_admin::mint_token_player(
-            player_cap,
+        profile::mint_to_profile(
+            profile_cap,
             get_achievement_collection_name<GameType, StatType, AchievementType>(),
             get_achievement_token_description<GameType, StatType, AchievementType>(player_address),
             get_achievement_token_name<GameType, StatType, AchievementType>(player_address),
@@ -112,7 +112,7 @@ module aptos_arcade::achievement {
     public fun get_has_player_claimed_achievemet<GameType, StatType, AchievementType>(player: address): bool {
         game_admin::has_player_received_token<GameType>(
             get_achievement_collection_name<GameType, StatType, AchievementType>(),
-            player,
+            profile::get_player_profile_address<GameType>(player),
         )
     }
 
@@ -196,6 +196,8 @@ module aptos_arcade::achievement {
     // tests
 
     #[test_only]
+    use std::signer;
+    #[test_only]
     use aptos_token_objects::collection::{Self, Collection};
     #[test_only]
     use aptos_token_objects::token::{Self, Token};
@@ -211,8 +213,9 @@ module aptos_arcade::achievement {
 
     #[test(aptos_arcade=@aptos_arcade)]
     fun test_create_achievement_collection(aptos_arcade: &signer) acquires Achievement {
-        let game_admin_cap = game_admin::initialize(aptos_arcade, TestGame {});
-        stats::create_stat(&game_admin_cap, TestStat {});
+        let game_admin_cap = game_admin::initialize(aptos_arcade, &TestGame {});
+        profile::create_profile_collection(&game_admin_cap);
+        stats::create_stat(&game_admin_cap, 90, TestStat {});
         let threshold = 100;
         let constructor_ref = create_achievement<TestGame, TestStat, TestAchievement>(
             &game_admin_cap,
@@ -231,7 +234,7 @@ module aptos_arcade::achievement {
     #[test(aptos_arcade=@aptos_arcade)]
     #[expected_failure(abort_code=ESTAT_DOES_NOT_EXIST)]
     fun test_create_achievement_collection_stat_doesnt_exist(aptos_arcade: &signer) {
-        let game_admin_cap = game_admin::initialize(aptos_arcade, TestGame {});
+        let game_admin_cap = game_admin::initialize(aptos_arcade, &TestGame {});
         let threshold = 100;
         create_achievement<TestGame, TestStat, TestAchievement>(
             &game_admin_cap,
@@ -242,56 +245,48 @@ module aptos_arcade::achievement {
 
     #[test(aptos_arcade=@aptos_arcade, player=@0x100)]
     fun test_collect_achievement(aptos_arcade: &signer, player: &signer) acquires Achievement {
-        let game_admin_cap = game_admin::initialize(aptos_arcade, TestGame {});
-        stats::create_stat(&game_admin_cap, TestStat {});
+        let game_admin_cap = game_admin::initialize(aptos_arcade, &TestGame {});
+        profile::create_profile_collection(&game_admin_cap);
+        let default_value = 90;
+        stats::create_stat(&game_admin_cap, default_value, TestStat{});
         let threshold = 100;
         create_achievement<TestGame, TestStat, TestAchievement>(
             &game_admin_cap,
             threshold,
             TestAchievement {}
         );
-        let player_cap = game_admin::create_player_capability(player, TestGame {});
-        let player_address = game_admin::get_player_address(&player_cap);
-        let default_value = 90;
-        stats::mint_stat(
-            &player_cap,
-            default_value,
-            TestStat {}
-        );
+        profile::mint_profile_token(&game_admin::create_minter_capability(player, &TestGame {}));
+
+        let player_address = signer::address_of(player);
+        stats::mint_stat(&profile::create_profile_cap(player, &TestGame {}), TestStat {});
         assert!(!get_player_meets_achievement_threshold<TestGame, TestStat, TestAchievement>(player_address), 0);
         stats::update_stat(&game_admin_cap, player_address, threshold, TestStat {});
         let constructor_ref = collect_achievement<TestGame, TestStat, TestAchievement>(
-            &player_cap,
+            &profile::create_profile_cap<TestGame>(player, &TestGame {}),
             TestAchievement {}
         );
         let token_object = object::object_from_constructor_ref<Token>(&constructor_ref);
         assert!(token::name(token_object) == get_achievement_token_name<TestGame, TestStat, TestAchievement>(player_address), 0);
         assert!(token::description(token_object) == get_achievement_token_description<TestGame, TestStat, TestAchievement>(player_address), 0);
         assert!(token::uri(token_object) == get_achievement_token_uri<TestGame, TestStat, TestAchievement>(player_address), 0);
-        assert!(object::is_owner(token_object, player_address), 0);
+        assert!(object::is_owner(token_object, profile::get_player_profile_address<TestGame>(player_address)), 0);
         assert!(get_has_player_claimed_achievemet<TestGame, TestStat, TestAchievement>(player_address), 0);
     }
 
     #[test(aptos_arcade=@aptos_arcade, player=@0x100)]
     #[expected_failure(abort_code=ETHRESHOLD_NOT_MET)]
     fun test_collect_achievement_doesnt_meet_threshold(aptos_arcade: &signer, player: &signer) acquires Achievement {
-        let game_admin_cap = game_admin::initialize(aptos_arcade, TestGame {});
-        stats::create_stat(&game_admin_cap, TestStat {});
-        let threshold = 100;
-        create_achievement<TestGame, TestStat, TestAchievement>(
-            &game_admin_cap,
-            threshold,
-            TestAchievement {}
-        );
-        let player_cap = game_admin::create_player_capability(player, TestGame {});
+        let game_admin_cap = game_admin::initialize(aptos_arcade, &TestGame {});
+        profile::create_profile_collection(&game_admin_cap);
         let default_value = 90;
-        stats::mint_stat(
-            &player_cap,
-            default_value,
-            TestStat {}
-        );
+        stats::create_stat(&game_admin_cap, default_value, TestStat {});
+        let threshold = 100;
+        create_achievement<TestGame, TestStat, TestAchievement>(&game_admin_cap, threshold, TestAchievement {});
+        profile::mint_profile_token(&game_admin::create_minter_capability(player, &TestGame {}));
+
+        stats::mint_stat(&profile::create_profile_cap(player, &TestGame {}), TestStat {});
         collect_achievement<TestGame, TestStat, TestAchievement>(
-            &player_cap,
+            &profile::create_profile_cap(player, &TestGame {}),
             TestAchievement {}
         );
     }
