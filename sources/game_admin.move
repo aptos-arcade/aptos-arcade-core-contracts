@@ -47,6 +47,7 @@ module aptos_arcade::game_admin {
 
     /// holds the `SignerCapability` for the game admin account
     struct GameAdmin<phantom GameType> has key {
+        /// `SignerCapability` for the game admin account
         signer_cap: SignerCapability
     }
 
