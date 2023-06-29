@@ -22,6 +22,11 @@ module aptos_arcade::scripts {
         game_admin_cap
     }
 
+    /// creates a stat of type StatType for GameType
+    /// `game_admin` - must be the deployer of the GameType struct
+    /// `default_value` - the default value for the stat
+    /// `game_witness` - an instance of the GameType struct
+    /// `stat_witness` - an instance of the StatType struct
     public fun create_stat<GameType: drop, StatType: drop>(
         game_admin: &signer,
         default_value: u64,
@@ -35,6 +40,12 @@ module aptos_arcade::scripts {
         );
     }
 
+    /// updates the value of a stat of type StatType for GameType for a player
+    /// `game_admin` - must be the deployer of the GameType struct
+    /// `player_address` - the address of the player
+    /// `value` - the new value for the stat
+    /// `game_witness` - an instance of the GameType struct
+    /// `stat_witness` - an instance of the StatType struct
     public fun update_stat_value<GameType: drop, StatType: drop>(
         game_admin: &signer,
         player_address: address,
@@ -80,6 +91,11 @@ module aptos_arcade::scripts {
         );
     }
 
+    /// creates an achievement of type AchievementType for GameType with a threshold value for a stat of type StatType
+    /// `game_admin` - must be the deployer of the GameType struct
+    /// `threshold` - the threshold value for the stat
+    /// `game_witness` - an instance of the GameType struct
+    /// `achievement_witness` - an instance of the AchievementType struct
     public fun create_achievement<GameType: drop, StatType: drop, AchievementType: drop>(
         game_admin: &signer,
         threshold: u64,
@@ -95,6 +111,9 @@ module aptos_arcade::scripts {
 
     // player functions
 
+    /// initializes the Aptos Arcade modules for a specific player
+    /// `player` - the player
+    /// `witness` - an instance of the GameType struct
     public fun initialize_player<GameType: drop>(player: &signer, witness: GameType): ProfileCapability<GameType> {
         profile::mint_profile_token(&game_admin::create_minter_capability(player, &witness));
         let profile_cap = profile::create_profile_cap(player, &witness);
@@ -102,6 +121,10 @@ module aptos_arcade::scripts {
         profile_cap
     }
 
+    /// registers a stat of type StatType for GameType for a player
+    /// `player` - the player
+    /// `game_witness` - an instance of the GameType struct
+    /// `stat_witness` - an instance of the StatType struct
     public fun register_stat<GameType: drop, StatType: drop>(
         player: &signer,
         game_witness: GameType,
@@ -110,6 +133,10 @@ module aptos_arcade::scripts {
         stats::mint_stat(&profile::create_profile_cap(player, &game_witness), stat_witness);
     }
 
+    /// claims an achievement of type AchievementType for GameType for a player with a threshold value for a stat of type StatType
+    /// `player` - the player
+    /// `game_witness` - an instance of the GameType struct
+    /// `achievement_witness` - an instance of the AchievementType struct
     public fun claim_achievement<GameType: drop, StatType: drop, AchievementType: drop>(
         player: &signer,
         game_witness: GameType,
