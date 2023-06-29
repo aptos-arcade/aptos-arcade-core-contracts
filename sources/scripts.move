@@ -18,6 +18,7 @@ module aptos_arcade::scripts {
         let game_admin_cap = game_admin::initialize(game_admin, &witness);
         profile::create_profile_collection(&game_admin_cap);
         elo::initialize_elo_collection(&game_admin_cap);
+        win_loss::initialize_win_loss(&game_admin_cap);
         match::initialize_matches_collection(&game_admin_cap);
         game_admin_cap
     }
@@ -118,6 +119,7 @@ module aptos_arcade::scripts {
         profile::mint_profile_token(&game_admin::create_minter_capability(player, &witness));
         let profile_cap = profile::create_profile_cap(player, &witness);
         elo::mint_elo_token(&profile_cap);
+        win_loss::mint_win_loss_token(&profile_cap);
         profile_cap
     }
 
@@ -152,6 +154,7 @@ module aptos_arcade::scripts {
 
     #[test_only]
     use std::signer;
+    use aptos_arcade::win_loss;
 
     #[test_only]
     struct TestGame has drop {}

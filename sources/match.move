@@ -122,6 +122,11 @@ module aptos_arcade::match {
             match.teams,
             winner_index
         );
+        win_loss::update_match_win_loss<GameType>(
+            game_admin_cap,
+            match.teams,
+            winner_index
+        );
     }
 
     // view functions
@@ -199,7 +204,10 @@ module aptos_arcade::match {
     /// `team` - a vector of addresses
     fun assert_all_players_registered_on_team<GameType>(team: vector<address>) {
         vector::for_each(team, | player | {
-            assert!(elo::has_player_registered_elo<GameType>(player), EPLAYER_NOT_REGISTERED);
+            assert!(
+                elo::has_player_registered_elo<GameType>(player) && win_loss::has_player_registered_win_loss<GameType>(player),
+                EPLAYER_NOT_REGISTERED
+            );
         });
     }
 
@@ -235,6 +243,7 @@ module aptos_arcade::match {
     use aptos_arcade::game_admin::Collection;
     #[test_only]
     use aptos_arcade::profile;
+    use aptos_arcade::win_loss;
 
     #[test_only]
     struct TestGame has drop {}
@@ -260,12 +269,16 @@ module aptos_arcade::match {
         profile::mint_profile_token(&game_admin::create_minter_capability(player2, &TestGame {}));
         initialize_matches_collection(&game_admin_cap);
         elo::initialize_elo_collection(&game_admin_cap);
+        win_loss::initialize_win_loss(&game_admin_cap);
 
         let player1_address = signer::address_of(player1);
         let player2_address = signer::address_of(player2);
 
         elo::mint_elo_token(&profile::create_profile_cap(player1, &TestGame {}));
         elo::mint_elo_token(&profile::create_profile_cap(player2, &TestGame {}));
+
+        win_loss::mint_win_loss_token(&profile::create_profile_cap(player1, &TestGame {}));
+        win_loss::mint_win_loss_token(&profile::create_profile_cap(player2, &TestGame {}));
 
         let teams = vector<vector<address>>[
             vector<address>[player1_address],
@@ -334,6 +347,10 @@ module aptos_arcade::match {
         profile::mint_profile_token(&game_admin::create_minter_capability(player2, &TestGame {}));
         initialize_matches_collection(&game_admin_cap);
         elo::initialize_elo_collection(&game_admin_cap);
+        win_loss::initialize_win_loss(&game_admin_cap);
+
+        win_loss::mint_win_loss_token<TestGame>(&profile::create_profile_cap(player1, &TestGame {}));
+        win_loss::mint_win_loss_token<TestGame>(&profile::create_profile_cap(player2, &TestGame {}));
 
         let player1_address = signer::address_of(player1);
         let player2_address = signer::address_of(player2);
@@ -346,16 +363,51 @@ module aptos_arcade::match {
     }
 
     #[test(aptos_arcade=@aptos_arcade, player1=@0x100, player2=@0x101)]
-    fun test_set_match_result(aptos_arcade: &signer, player1: &signer, player2: &signer) acquires Match {
+    #[expected_failure(abort_code=EPLAYER_NOT_REGISTERED)]
+    fun test_create_match_win_loss_not_registered(aptos_arcade: &signer, player1: &signer, player2: &signer) {
         let game_admin_cap = game_admin::initialize(aptos_arcade, &TestGame {});
         profile::create_profile_collection(&game_admin_cap);
         profile::mint_profile_token(&game_admin::create_minter_capability(player1, &TestGame {}));
         profile::mint_profile_token(&game_admin::create_minter_capability(player2, &TestGame {}));
         initialize_matches_collection(&game_admin_cap);
         elo::initialize_elo_collection(&game_admin_cap);
+        win_loss::initialize_win_loss(&game_admin_cap);
+
+        elo::mint_elo_token<TestGame>(&profile::create_profile_cap(player1, &TestGame {}));
+        elo::mint_elo_token<TestGame>(&profile::create_profile_cap(player2, &TestGame {}));
+
+        let player1_address = signer::address_of(player1);
+        let player2_address = signer::address_of(player2);
+
+        let teams = vector<vector<address>>[
+            vector<address>[player1_address],
+            vector<address>[player2_address]
+        ];
+        create_match(&game_admin_cap, teams);
+    }
+
+    #[test_only]
+    fun setup_tests(aptos_arcade: &signer, player1: &signer, player2: &signer): GameAdminCapability<TestGame> {
+        let game_admin_cap = game_admin::initialize(aptos_arcade, &TestGame {});
+        profile::create_profile_collection(&game_admin_cap);
+        profile::mint_profile_token(&game_admin::create_minter_capability(player1, &TestGame {}));
+        profile::mint_profile_token(&game_admin::create_minter_capability(player2, &TestGame {}));
+        initialize_matches_collection(&game_admin_cap);
+        elo::initialize_elo_collection(&game_admin_cap);
+        win_loss::initialize_win_loss(&game_admin_cap);
 
         elo::mint_elo_token(&profile::create_profile_cap(player1, &TestGame {}));
         elo::mint_elo_token(&profile::create_profile_cap(player2, &TestGame {}));
+
+        win_loss::mint_win_loss_token(&profile::create_profile_cap(player1, &TestGame {}));
+        win_loss::mint_win_loss_token(&profile::create_profile_cap(player2, &TestGame {}));
+
+        game_admin_cap
+    }
+
+    #[test(aptos_arcade=@aptos_arcade, player1=@0x100, player2=@0x101)]
+    fun test_set_match_result(aptos_arcade: &signer, player1: &signer, player2: &signer) acquires Match {
+        let game_admin_cap = setup_tests(aptos_arcade, player1, player2);
 
         let player1_address = signer::address_of(player1);
         let player2_address = signer::address_of(player2);
@@ -376,15 +428,7 @@ module aptos_arcade::match {
     #[test(aptos_arcade=@aptos_arcade, player1=@0x100, player2=@0x101)]
     #[expected_failure(abort_code=EMATCH_ALREADY_COMPLETE)]
     fun test_set_match_result_already_set(aptos_arcade: &signer, player1: &signer, player2: &signer) acquires Match {
-        let game_admin_cap = game_admin::initialize(aptos_arcade, &TestGame {});
-        profile::create_profile_collection(&game_admin_cap);
-        profile::mint_profile_token(&game_admin::create_minter_capability(player1, &TestGame {}));
-        profile::mint_profile_token(&game_admin::create_minter_capability(player2, &TestGame {}));
-        initialize_matches_collection(&game_admin_cap);
-        elo::initialize_elo_collection(&game_admin_cap);
-
-        elo::mint_elo_token(&profile::create_profile_cap(player1, &TestGame {}));
-        elo::mint_elo_token(&profile::create_profile_cap(player2, &TestGame {}));
+        let game_admin_cap = setup_tests(aptos_arcade, player1, player2);
 
         let player1_address = signer::address_of(player1);
         let player2_address = signer::address_of(player2);
@@ -410,15 +454,7 @@ module aptos_arcade::match {
     #[test(aptos_arcade=@aptos_arcade, player1=@0x100, player2=@0x101)]
     #[expected_failure(abort_code=EINVALID_WINNER_INDEX)]
     fun test_set_match_result_invalid_index(aptos_arcade: &signer, player1: &signer, player2: &signer) acquires Match {
-        let game_admin_cap = game_admin::initialize(aptos_arcade, &TestGame {});
-        profile::create_profile_collection(&game_admin_cap);
-        profile::mint_profile_token(&game_admin::create_minter_capability(player1, &TestGame {}));
-        profile::mint_profile_token(&game_admin::create_minter_capability(player2, &TestGame {}));
-        initialize_matches_collection(&game_admin_cap);
-        elo::initialize_elo_collection(&game_admin_cap);
-
-        elo::mint_elo_token(&profile::create_profile_cap(player1, &TestGame {}));
-        elo::mint_elo_token(&profile::create_profile_cap(player2, &TestGame {}));
+        let game_admin_cap = setup_tests(aptos_arcade, player1, player2);
 
         let player1_address = signer::address_of(player1);
         let player2_address = signer::address_of(player2);
